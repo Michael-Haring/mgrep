@@ -6,10 +6,10 @@ that grep was single threaded and I knew then I had to make my own multi-threade
 and that searching a file for a pattern would make for a solid task.
 
 
-I hope to slowly work on aspects of this program that grep still beats. Mostly simple features 
-it would be cool to implement some faster reading and actual a framework to get real benchmarks.
-Also once that framework is setup, I would like to also test against another multi-threaded 
-version of grep like ripgrep.
+UPDATE:
+My program is only faster than grep for larger searches. I am just realizing how much extra work grep does, and how to eliminate much of that extra work that mgrep does not even do. Options like 
+-I drastically improve greps performance, and put it on par with mgrep for small searches. I will 
+make an effort to improve mgreps startup and work pipeline to beat grep.
 
 ## Quick Start
 ### Dependencies
