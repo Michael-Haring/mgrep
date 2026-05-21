@@ -14,7 +14,9 @@
 #include <fstream>
 #include <mutex>
 #include <stdexcept>
-
+#include <memory>
+#include <thread>
+#include <chrono>
 
 
 
@@ -83,8 +85,7 @@ void ThreadPool::work_loop(struct WorkerContext &w_stat)
             if (m_done && m_tasks.empty()) {
                 return; // exit thread
             }
-
-            task = std::move(m_tasks.front());
+           task = std::move(m_tasks.front());
             m_tasks.pop();
         }
 
@@ -120,6 +121,7 @@ void ThreadPool::notify_and_join()
     }
 }
 
+/*
 bool ThreadPool::write_logs()
 {
     std::ofstream out("log.txt", std::ios::binary);
@@ -134,6 +136,7 @@ bool ThreadPool::write_logs()
     }
     return true;
 }
+*/
 
 void ThreadPool::fake_work()
 {   

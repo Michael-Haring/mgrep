@@ -18,8 +18,8 @@
 
 
 struct WorkerContext {
-    unsigned int ID = 0;
-    std::string logBuffer;
+    size_t ID = 0;
+    //std::string logBuffer;
     size_t tasks_completed = 0;
 };
 

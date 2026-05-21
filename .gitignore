@@ -1,9 +1,11 @@
-/build/
+/buil*/
 out/
 testing/
+scripts/
 *.o
 .cache/
 compile_commands.json
+Makefile
 *.obj
 *.exe.dll
 *.so
