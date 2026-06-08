@@ -61,14 +61,15 @@ The legendary getopt provides us with several options in this program.
 1. -h Prints help text, shows user options and how to use the program
 2. -v Enables verbose output, things like the total files searched and total matches found
 3. -r Enables recursive search mode, if a dir is found, mgrep will search that dir as well
-4. -c Enables cool colors. NOTE: It will not search for your .dircolors file or anything,
+4. -p Enables cool colors. NOTE: It will not search for your .dircolors file or anything,
    these are colors I think are cool, with a black terminal background. If your terminal is
    bright, this will most likely look aweful and consider becoming a real programmer and
    changing your background to a dark color.
-5. -n Adds an aditional newline between pattern finds. Default is 1 like grep
-6. -l Prints the line number of the file the pattern was found
-7. -s Prints the line of source cose that contained the pattern
-8. -a Searches ALL files. A handful are skipped by default:
+5. -c Prints matching line counts instead of normal matches
+6. -n Adds an aditional newline between pattern finds. Default is 1 like grep
+7. -l Prints the line number of the file the pattern was found
+8. -s Prints the line of source cose that contained the pattern
+9. -a Searches ALL files. A handful are skipped by default:
    - no extension
    - .so
    - .a
@@ -93,7 +94,7 @@ that is skipped via the default search, so I will not be using -a, but I do want
 - source code
 - additional new lines
 ```bash
-./mgrep -rclns "pattern" dir
+./mgrep -rplns "pattern" dir
 ```
 ## Timing 
 This timing was done on various levels of my laptops directories. It should be known, as I stated in the introduction, grep does not search some files, and mgrep also does not search some files. So this timing is not precisely how long it takes these two programs to search exactly 100000 files, rather how long does it take each of the programs to do a certain search. Some files will be left out, and it is likely what I am looking for is not in either the files grep or mgrep leaves out.
@@ -134,7 +135,6 @@ the format right, and how many options there were, A+ for the API. I do also fee
 better with CMake, slowly learning the options and how to set up the CMake_list.txt. Even the 
 speed at which I can navigate obstacles is increasing as I do more of these projects. Ensuring 
 nvim LSP can see the right .hpp files, random design choices or even algorithmic problems.
-
 
 
 

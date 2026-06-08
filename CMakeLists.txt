@@ -34,7 +34,13 @@ target_compile_options(mgrep_config INTERFACE
 )
 
 add_library(mgrep_library
+    src/colors.cpp
+    src/ignore.cpp
+    src/options.cpp
+    src/output.cpp
+    src/search.cpp
     src/threads.cpp
+    src/traversal.cpp
 )
 target_link_libraries(mgrep_library
     PUBLIC mgrep_config
@@ -51,6 +57,7 @@ target_link_libraries(mgrep
 add_executable(tests
     testing/thread-pool-testing.cpp
 )
+add_dependencies(tests mgrep)
 
 target_include_directories( tests PRIVATE
     ${CMAKE_SOURCE_DIR}/external
