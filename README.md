@@ -59,17 +59,22 @@ to read.
 ## Options
 The legendary getopt provides us with several options in this program.
 1. -h Prints help text, shows user options and how to use the program
-2. -v Enables verbose output, things like the total files searched and total matches found
-3. -r Enables recursive search mode, if a dir is found, mgrep will search that dir as well
-4. -p Enables cool colors. NOTE: It will not search for your .dircolors file or anything,
+2. -v / --invert-match Prints lines that do not contain the pattern
+3. --verbose Enables verbose output, things like the total files searched and total matches found
+4. -r Enables recursive search mode, if a dir is found, mgrep will search that dir as well
+5. -p Enables cool colors. NOTE: It will not search for your .dircolors file or anything,
    these are colors I think are cool, with a black terminal background. If your terminal is
    bright, this will most likely look aweful and consider becoming a real programmer and
    changing your background to a dark color.
-5. -c Prints matching line counts instead of normal matches
-6. -n Adds an aditional newline between pattern finds. Default is 1 like grep
-7. -l Prints the line number of the file the pattern was found
-8. -s Prints the line of source cose that contained the pattern
-9. -a Searches ALL files. A handful are skipped by default:
+6. -c Prints matching line counts instead of normal matches
+7. -q Prints nothing, only returns match status
+8. -o Prints only matching text, one occurrence per line
+9. --files-from FILE Reads newline-delimited input file paths from FILE
+10. --files-from0 FILE / --null-files-from FILE Reads NUL-delimited input file paths from FILE
+11. -n Adds an aditional newline between pattern finds. Default is 1 like grep
+12. -l Prints the line number of the file the pattern was found
+13. -s Prints the line of source cose that contained the pattern
+14. -a Searches ALL files. A handful are skipped by default:
    - no extension
    - .so
    - .a
@@ -135,6 +140,3 @@ the format right, and how many options there were, A+ for the API. I do also fee
 better with CMake, slowly learning the options and how to set up the CMake_list.txt. Even the 
 speed at which I can navigate obstacles is increasing as I do more of these projects. Ensuring 
 nvim LSP can see the right .hpp files, random design choices or even algorithmic problems.
-
-
-

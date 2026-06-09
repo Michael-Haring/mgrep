@@ -347,6 +347,19 @@ TEST_CASE("Piped stdin is searched when no path is supplied")
     REQUIRE(output == "needle from stdin\n");
 }
 
+TEST_CASE("Piped stdin exits with no-match status when no match is found")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nomega\n",
+        {"needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
 TEST_CASE("Dash path explicitly searches piped stdin")
 {
     const std::string output = run_mgrep_with_stdin(
@@ -357,6 +370,29 @@ TEST_CASE("Dash path explicitly searches piped stdin")
     REQUIRE(output == "needle from dash\n");
 }
 
+TEST_CASE("Implicit and explicit stdin produce the same plain output")
+{
+    const std::string input = "alpha\nneedle from stdin\nomega\n";
+
+    const std::string implicit_output = run_mgrep_with_stdin(input, {"needle"});
+    const std::string explicit_output = run_mgrep_with_stdin(input, {"needle", "-"});
+
+    REQUIRE(implicit_output == explicit_output);
+}
+
+TEST_CASE("Piped stdin supports short count option")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "needle one\nno match\nneedle two needle two\n",
+        {"-c", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "2\n");
+}
+
 TEST_CASE("Piped stdin supports line numbers and color highlighting")
 {
     const std::string output = run_mgrep_with_stdin(
@@ -365,6 +401,140 @@ TEST_CASE("Piped stdin supports line numbers and color highlighting")
     );
 
     REQUIRE(output == "\033[38;5;37m2:\033[0m\t\033[38;5;81mneedle\033[0m from stdin\n");
+}
+
+TEST_CASE("Piped stdin supports source option without changing plain source output")
+{
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nneedle from stdin\nomega\n",
+        {"-s", "needle"}
+    );
+
+    REQUIRE(output == "needle from stdin\n");
+}
+
+TEST_CASE("Piped stdin supports before and after context")
+{
+    const std::string output = run_mgrep_with_stdin(
+        "before\nneedle from stdin\nafter\n",
+        {"-B", "1", "-A", "1", "needle"}
+    );
+
+    REQUIRE(output == "before\nneedle from stdin\nafter\n");
+}
+
+TEST_CASE("Piped stdin quiet mode returns no-match status without output")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nomega\n",
+        {"-q", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Explicit dash can be mixed with file paths")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "needle from stdin\n",
+        {"needle", (fixture.root / "top.txt").string(), "-"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find("needle from stdin\n") != std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "top.txt")) != std::string::npos);
+}
+
+TEST_CASE("Explicit dash mixed with files returns no-match status when nothing matches")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "stdin miss\n",
+        {"not-present", (fixture.root / "src" / "two.md").string(), "-"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Explicit dash mixed with files supports count mode")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "needle from stdin\nneedle again\n",
+        {"-c", "needle", (fixture.root / "top.txt").string(), "-"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find(display_path(fixture.root / "top.txt") + "\t1\n") != std::string::npos);
+    REQUIRE(output.find("2\n") != std::string::npos);
+}
+
+TEST_CASE("Explicit dash mixed with files supports quiet mode")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "needle from stdin\n",
+        {"-q", "needle", (fixture.root / "src" / "two.md").string(), "-"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Explicit dash supports only-matching mode")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "needle needle\n",
+        {"-o", "needle", "-"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "needle\nneedle\n");
+}
+
+TEST_CASE("Explicit dash mixed with files supports context output")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "before\nneedle from stdin\nafter\n",
+        {"-B", "1", "-A", "1", "needle", (fixture.root / "src" / "two.md").string(), "-"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find("before\nneedle from stdin\nafter\n") != std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "src" / "two.md")) == std::string::npos);
+}
+
+TEST_CASE("Explicit dash mixed with files supports colors and line numbers")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nneedle from stdin\n",
+        {"-pl", "needle", (fixture.root / "src" / "two.md").string(), "-"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find("\033[38;5;37m2:\033[0m\t\033[38;5;81mneedle\033[0m from stdin\n") != std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "src" / "two.md")) == std::string::npos);
 }
 
 TEST_CASE("Count mode reports matching line counts for files")
@@ -400,6 +570,294 @@ TEST_CASE("Count mode exits with no-match status when count is zero")
 
     REQUIRE(exit_code == 1);
     REQUIRE(output.empty());
+}
+
+TEST_CASE("Quiet mode suppresses file output and returns match status")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+
+    const std::string output = run_mgrep({"-rq", "needle", fixture.root.string()}, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Quiet mode returns no-match status without output")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+
+    const std::string output = run_mgrep({"-rq", "not-present", fixture.root.string()}, &exit_code);
+
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Long quiet option suppresses stdin output and returns match status")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nneedle from stdin\nomega\n",
+        {"--quiet", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Quiet mode overrides count output")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+
+    const std::string output = run_mgrep({"-rcq", "needle", fixture.root.string()}, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Files-from searches newline-delimited explicit file paths")
+{
+    CliFixture fixture;
+    const std::filesystem::path list_path = fixture.root / "files.txt";
+    write_file(
+        list_path,
+        (fixture.root / "skip.bin").string() + "\n" +
+        (fixture.root / "src" / "two.md").string() + "\n"
+    );
+
+    const std::string output = run_mgrep({
+        "--files-from", list_path.string(),
+        "needle"
+    });
+
+    REQUIRE(output.find(display_path(fixture.root / "skip.bin")) != std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "src" / "two.md")) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "src" / "one.txt")) == std::string::npos);
+}
+
+TEST_CASE("Files-from0 searches NUL-delimited explicit file paths from stdin")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::string input =
+        (fixture.root / "src" / "one.txt").string() + '\0' +
+        (fixture.root / "src" / "nested" / "three.cpp").string() + '\0';
+
+    const std::string output = run_mgrep_with_stdin(
+        input,
+        {"--files-from0", "-", "needle nested"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find(display_path(fixture.root / "src" / "nested" / "three.cpp")) != std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "src" / "one.txt")) == std::string::npos);
+}
+
+TEST_CASE("Files-from reports missing listed files as errors")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path missing_path = fixture.root / "missing.txt";
+    const std::filesystem::path list_path = fixture.root / "missing-files.txt";
+    write_file(list_path, missing_path.string() + "\n");
+
+    const std::string output = run_mgrep({
+        "--files-from", list_path.string(),
+        "needle"
+    }, &exit_code);
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: path does not exist: " + missing_path.string()) != std::string::npos);
+}
+
+TEST_CASE("Only-matching stdin prints each occurrence on its own line")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "needle one needle\nno match\nneedle\n",
+        {"-o", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "needle\nneedle\nneedle\n");
+}
+
+TEST_CASE("Only-matching file output keeps path prefix")
+{
+    CliFixture fixture;
+
+    const std::string output = run_mgrep({
+        "-o",
+        "needle",
+        (fixture.root / "src" / "one.txt").string()
+    });
+
+    const std::string expected = display_path(fixture.root / "src" / "one.txt") + "\tneedle\n";
+    REQUIRE(output == expected + expected);
+}
+
+TEST_CASE("Only-matching output supports line numbers")
+{
+    CliFixture fixture;
+
+    const std::string output = run_mgrep({
+        "-ol",
+        "needle",
+        (fixture.root / "src" / "one.txt").string()
+    });
+
+    REQUIRE(output.find(display_path(fixture.root / "src" / "one.txt") + " 2:\tneedle\n") != std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "src" / "one.txt") + " 4:\tneedle\n") != std::string::npos);
+}
+
+TEST_CASE("Only-matching output supports colors")
+{
+    const std::string output = run_mgrep_with_stdin(
+        "needle needle\n",
+        {"-po", "needle"}
+    );
+
+    REQUIRE(output == "\033[38;5;81mneedle\033[0m\n\033[38;5;81mneedle\033[0m\n");
+}
+
+TEST_CASE("Count mode overrides only-matching output")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "needle needle\nneedle\n",
+        {"-co", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "2\n");
+}
+
+TEST_CASE("Quiet mode overrides only-matching output")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "needle needle\n",
+        {"-qo", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Invert match prints stdin lines that do not contain the pattern")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "error\nok\nerror again\n",
+        {"-v", "error"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "ok\n");
+}
+
+TEST_CASE("Long invert match supports source and line numbers for files")
+{
+    CliFixture fixture;
+
+    const std::string output = run_mgrep({
+        "--invert-match",
+        "-ls",
+        "needle",
+        (fixture.root / "src" / "one.txt").string()
+    });
+
+    REQUIRE(output.find(display_path(fixture.root / "src" / "one.txt")) != std::string::npos);
+    REQUIRE(output.find("\n1:\talpha\n") != std::string::npos);
+    REQUIRE(output.find("\n3:\tomega\n") != std::string::npos);
+    REQUIRE(output.find("needle here") == std::string::npos);
+}
+
+TEST_CASE("Invert match default file output prints matching file path once")
+{
+    CliFixture fixture;
+
+    const std::string output = run_mgrep({
+        "-v",
+        "needle",
+        (fixture.root / "src" / "one.txt").string()
+    });
+
+    REQUIRE(output == display_path(fixture.root / "src" / "one.txt") + "\n");
+}
+
+TEST_CASE("Invert match count mode counts non-matching lines")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "error\nok\nerror again\n",
+        {"-vc", "error"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "1\n");
+}
+
+TEST_CASE("Invert match quiet mode returns match status without output")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "error\nok\nerror again\n",
+        {"-vq", "error"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Invert match quiet mode returns no-match status when every line matches")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "error\nerror again\n",
+        {"-vq", "error"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Only-matching cannot be combined with invert match")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "error\nok\n",
+        {"-vo", "error"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: --only-matching cannot be used with --invert-match") != std::string::npos);
+}
+
+TEST_CASE("Long verbose option preserves verbose output")
+{
+    CliFixture fixture;
+
+    const std::string output = run_mgrep({
+        "--verbose",
+        "needle",
+        (fixture.root / "top.txt").string()
+    });
+
+    REQUIRE(output.find(display_path(fixture.root / "top.txt")) != std::string::npos);
+    REQUIRE(output.find("Completed ") != std::string::npos);
 }
 
 TEST_CASE("Piped stdin matches long lines across read buffers")

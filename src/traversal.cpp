@@ -28,19 +28,29 @@ void push_file_batch(
     std::vector<std::string>& batch,
     ThreadPool& tp,
     UserOptions& user_stats,
-    ReadFileFn read_file
+    ReadFileFn read_file,
+    std::atomic<bool>& stop_requested
 ) {
     if (batch.empty()) {
         return;
     }
 
-    tp.push_task([files = std::move(batch), &tp, &user_stats, read_file]() {
+    tp.push_task([files = std::move(batch), &tp, &user_stats, read_file, &stop_requested]() {
         std::string output;
         output.reserve(8192);
         size_t local_matches = 0;
 
         for (const auto& path : files) {
+            if (user_stats.quiet && stop_requested.load(std::memory_order_relaxed)) {
+                break;
+            }
+
             local_matches += read_file(path, user_stats, output);
+
+            if (user_stats.quiet && local_matches > 0) {
+                stop_requested.store(true, std::memory_order_relaxed);
+                break;
+            }
 
             if (output.size() >= OUTPUT_FLUSH_SIZE) {
                 flush_output(tp, output, local_matches);
@@ -56,6 +66,10 @@ void push_file_batch(
 
 void add_search_path(SearchWork& work, const std::string& path)
 {
+    if (work.user_stats.quiet && work.stop_requested.load(std::memory_order_relaxed)) {
+        return;
+    }
+
     if (!work.tp && work.small_paths.size() < SINGLE_THREAD_FILE_LIMIT) {
         work.small_paths.push_back(path);
         return;
@@ -68,7 +82,13 @@ void add_search_path(SearchWork& work, const std::string& path)
             work.batch.push_back(std::move(small_path));
 
             if (work.batch.size() >= FILE_BATCH_SIZE) {
-                push_file_batch(work.batch, *work.tp, work.user_stats, work.read_file);
+                push_file_batch(
+                    work.batch,
+                    *work.tp,
+                    work.user_stats,
+                    work.read_file,
+                    work.stop_requested
+                );
             }
         }
 
@@ -78,7 +98,7 @@ void add_search_path(SearchWork& work, const std::string& path)
     work.batch.push_back(path);
 
     if (work.batch.size() >= FILE_BATCH_SIZE) {
-        push_file_batch(work.batch, *work.tp, work.user_stats, work.read_file);
+        push_file_batch(work.batch, *work.tp, work.user_stats, work.read_file, work.stop_requested);
     }
 }
 
@@ -88,7 +108,7 @@ size_t finish_search(SearchWork& work)
         return search_files_single_thread(work.small_paths, work.user_stats, work.read_file);
     }
 
-    push_file_batch(work.batch, *work.tp, work.user_stats, work.read_file);
+    push_file_batch(work.batch, *work.tp, work.user_stats, work.read_file, work.stop_requested);
     work.tp->wait_for_all();
 
     return work.tp->count_tasks_completed();
@@ -141,6 +161,10 @@ void collect_search_files_recursive(
     const int dir_fd = ::dirfd(dir);
 
     while (dirent* entry = ::readdir(dir)) {
+        if (work.user_stats.quiet && work.stop_requested.load(std::memory_order_relaxed)) {
+            break;
+        }
+
         const char* name = entry->d_name;
 
         if (name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'))) {
@@ -218,6 +242,11 @@ void collect_search_files_one_dir(
     found_files.reserve(FILE_BATCH_SIZE);
 
     while (dirent* entry = ::readdir(dir)) {
+        if (traversal.search.user_stats.quiet &&
+            traversal.search.stop_requested.load(std::memory_order_relaxed)) {
+            break;
+        }
+
         const char* name = entry->d_name;
 
         if (name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'))) {
@@ -281,11 +310,17 @@ void collect_search_files_one_dir(
     if (!found_files.empty()) {
         std::lock_guard<std::mutex> lock(traversal.search_mtx);
         for (const auto& file : found_files) {
+            if (traversal.search.user_stats.quiet &&
+                traversal.search.stop_requested.load(std::memory_order_relaxed)) {
+                break;
+            }
             add_search_path(traversal.search, file);
         }
     }
 
-    if (!child_dirs.empty()) {
+    if (!child_dirs.empty() &&
+        !(traversal.search.user_stats.quiet &&
+          traversal.search.stop_requested.load(std::memory_order_relaxed))) {
         std::lock_guard<std::mutex> lock(traversal.dirs_mtx);
         for (auto& child : child_dirs) {
             traversal.dirs.push(std::move(child));
@@ -304,8 +339,17 @@ void traverse_dir_worker(DirectoryTraversalWork& traversal)
         {
             std::unique_lock<std::mutex> lock(traversal.dirs_mtx);
             traversal.cv.wait(lock, [&] {
-                return traversal.done || !traversal.dirs.empty();
+                return traversal.done || !traversal.dirs.empty() ||
+                    (traversal.search.user_stats.quiet &&
+                     traversal.search.stop_requested.load(std::memory_order_relaxed));
             });
+
+            if (traversal.search.user_stats.quiet &&
+                traversal.search.stop_requested.load(std::memory_order_relaxed)) {
+                traversal.done = true;
+                traversal.cv.notify_all();
+                return;
+            }
 
             if (traversal.done && traversal.dirs.empty()) {
                 return;
@@ -321,7 +365,9 @@ void traverse_dir_worker(DirectoryTraversalWork& traversal)
         {
             std::lock_guard<std::mutex> lock(traversal.dirs_mtx);
             --traversal.active_dirs;
-            if (traversal.active_dirs == 0 && traversal.dirs.empty()) {
+            if ((traversal.search.user_stats.quiet &&
+                 traversal.search.stop_requested.load(std::memory_order_relaxed)) ||
+                (traversal.active_dirs == 0 && traversal.dirs.empty())) {
                 traversal.done = true;
                 traversal.cv.notify_all();
             }

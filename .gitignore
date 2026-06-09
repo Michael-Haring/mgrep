@@ -1,6 +1,5 @@
 /buil*/
 out/
-testing/
 scripts/
 *.o
 .cache/
@@ -15,3 +14,9 @@ Makefile
 *idea
 *DS_Store
 Thumbs.db
+
+*.txt
+
+*.md
+!README.md
+skills/

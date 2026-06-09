@@ -1,3 +1,6 @@
+# Rebuild instructions for noobies
+# from the project root run:
+# cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
 cmake_minimum_required(VERSION 3.10)
 
 project(mgrep LANGUAGES CXX)
@@ -55,7 +58,7 @@ target_link_libraries(mgrep
 )
 
 add_executable(tests
-    testing/thread-pool-testing.cpp
+    testing/mgrep-cli-tests.cpp
 )
 add_dependencies(tests mgrep)
 

@@ -3,6 +3,7 @@
 #include "search.hpp"
 #include "threads.hpp"
 
+#include <atomic>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -26,6 +27,7 @@ struct SearchWork {
     std::vector<std::string> batch;
     std::unique_ptr<ThreadPool> tp;
     ReadFileFn read_file = nullptr;
+    std::atomic<bool> stop_requested{false};
 };
 
 struct DirectoryTraversalWork {
@@ -46,7 +48,8 @@ void push_file_batch(
     std::vector<std::string>& batch,
     ThreadPool& tp,
     UserOptions& user_stats,
-    ReadFileFn read_file
+    ReadFileFn read_file,
+    std::atomic<bool>& stop_requested
 );
 void collect_search_files_recursive(std::string& root, SearchWork& work);
 void collect_search_files_recursive_parallel(std::string& root, SearchWork& work);
