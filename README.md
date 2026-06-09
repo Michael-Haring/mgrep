@@ -1,20 +1,23 @@
 # mgrep
-  My multi-threaded version of the unix classic, grep. I was recently playing 
-around with threads and made a thread pooling system, but struggled to find meaningful 
-tasks to give to the threads to really put it to the test. A few days later I heard 
-that grep was single threaded and I knew then I had to make my own multi-threaded version, 
-and that searching a file for a pattern would make for a solid task.
+  This program is a multi-threaded grep, that essentially at this point is a slightly faster, less feature rich version of ripgrep.
+  
 
 ## Overview
-mgrep is roughly the same speed, could be slightly slower or slightly faster than grep 
-depending on the options used, for small searches. As far as I know when the search 
-gets large enough mgrep gets MUCH faster than grep. This is not as clear as I claim, and both 
-grep and mgrep skip certain files. However if you take a look at the chart near the bottom you will see speed differences between grep and mgrep for various sized searches.
+At this current point, mgrep is tied or faster than ripgrep for searching various paths in my own laptop, while searching more files. Obviously, it is not as robust or full of various features that mgrep currently lacks. This is part of the advantage of being a 10 year old open source software. Do not confuse my pride and interest in this project as an assertion that mgrep is a superior tool overall.
 
-grep not searching every file became apparent when I was writing a bash script that would 
-run them both and compare the results. More on file extensions that are skipped by default in 
-the "Options" section.
+## Agentic AI
+I have had several experiences now where employers express desire for their employees to have experience working with agentic AI models. In an attempt to familiarize myself with this new technology and try to evolve with the times I used agentic AI on this program. I have a 20$/month OpenAI subscription which gives me access to OpenAI's Codex model. If you are unfamiliar with this tool, it is essentially a ChatGPT that lives in your terminal, that is more tuned towards programming, rather than delivering pages and pages of text.
 
+I did not start the project with this tool, and this is my first time using anything like this, so beginning a new project from scratch with the help of AI might bring along with it several unique challenges I did not have to overcome. By the time I was using Codex on this problem, I already have a well functioning relatively fast mgrep, with a couple of required options.
+
+When I had decided to use Codex, I began researching how to use these models effectively. I learned about a harness, and these *.md files you can use to keep certain ideas at the forefront of the models "thinking", or essentially use the .md files as scripts that the agent can look and and begin executing. You can give it various rules in the agents equivelent to a AGENTS.md, either locally or at your /$HOME. With all of these features at your disposal, you can really narrow the models focus, and get results that were, at least my pea sized brain, absolutely mind blowing.
+
+### Agentic AI Subjective
+A good arument you often here is a steel-manned version of the AI is bad, trained on bad code, unreliable results or hallucinations. Even, changing code that was irrelevent to what you asked. Any horror story you could imagine. I was extremely hesitent to even activate the model as I did not trust it to not just begin removing files off of my computer and other such nonsense. I did not even want to use codex on my original project incase it completely destroyed it. I copied the entire project to basically give codex a playground. When I first started Codex in this projects root, I already had a bash script that ran mgrep against other greps several times and collected benchmarks. I already had a Catch2 test suite.
+
+I asked codex, to look inside the src/ dir and list what the top 5 most effective optimizations we could make were. After telling the agent about all of the tools it had at its disposal, it began working to implement those optimizations. testing the effects of the changes, and adding test cases to the script as it went. Adjusting old tests that failed because of new ways of doing things. It was not magic, it was just able to try all of these various ways of doing things very quickly, and improve on iterations based on parameters I gave, namely functionality and speed.
+
+I am not an expert and this is not an article centered around philosophy, so I will not drag on here but the point is, Codex is an extremely powerful tool. Times are changing, and the current version of Codex is very likely the worst version you will ever use again.
 
 ## Quick Start
 ### Dependencies
@@ -57,15 +60,13 @@ is that these threads are put to sleep until they recieve a signal to check if t
 to read.
 
 ## Options
-The legendary getopt provides us with several options in this program.
+Efforts have been made to include features that I have never once used, but that seasoned programmers might find useful, or features that various versions of grep may have already.
+The legendary getopt provides us with several options in this program
 1. -h Prints help text, shows user options and how to use the program
 2. -v / --invert-match Prints lines that do not contain the pattern
 3. --verbose Enables verbose output, things like the total files searched and total matches found
 4. -r Enables recursive search mode, if a dir is found, mgrep will search that dir as well
-5. -p Enables cool colors. NOTE: It will not search for your .dircolors file or anything,
-   these are colors I think are cool, with a black terminal background. If your terminal is
-   bright, this will most likely look aweful and consider becoming a real programmer and
-   changing your background to a dark color.
+5. -p Enables cool colors
 6. -c Prints matching line counts instead of normal matches
 7. -q Prints nothing, only returns match status
 8. -o Prints only matching text, one occurrence per line
@@ -88,8 +89,9 @@ The legendary getopt provides us with several options in this program.
    - .png
    - .jpg
    - .pdf
-Skipping these files make a large difference while searching my entire computer. ~12-11 seconds
-down to ~4 seconds. The -a option mgrep will search EVERY file that the user has read permissions for.
+
+
+# Below this will be updated when I am ready.
 
 ## Using mgreps Full Power
 I can say with extremely high certainty that whatever pattern I am looking for is not in any file 
@@ -102,7 +104,9 @@ that is skipped via the default search, so I will not be using -a, but I do want
 ./mgrep -rplns "pattern" dir
 ```
 ## Timing 
-This timing was done on various levels of my laptops directories. It should be known, as I stated in the introduction, grep does not search some files, and mgrep also does not search some files. So this timing is not precisely how long it takes these two programs to search exactly 100000 files, rather how long does it take each of the programs to do a certain search. Some files will be left out, and it is likely what I am looking for is not in either the files grep or mgrep leaves out.
+This timing is not the most precise set of measurements known to mankind, so take them with a grain of salt.
+The script starts in the project root, and backs up one directory every search iteration. I also stopped timing against grep as mgrep and rg both blow grep out of the water (multi-threading and pruning win, grep is ultimitely efficient).
+A more interesting test, at least currently without a fair test to use with grep, is against ripgrep. Just like ripgrep, mgrep skips files denoted in a .ignore file in your users home directory. I use an strace call to determine the approximate number of files opened by each program. 
 
 Average speed for 10 tests using "time" unix command, except for the largest test where I averaged 
 4 tests:
