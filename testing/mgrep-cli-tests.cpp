@@ -43,12 +43,16 @@ std::string test_home_without_ignore()
 std::string run_mgrep(
     const std::vector<std::string>& args,
     int* exit_code = nullptr,
-    const std::string& home_dir = test_home_without_ignore()
+    const std::string& home_dir = test_home_without_ignore(),
+    bool force_no_color = true
 )
 {
     std::string command = "HOME=";
     command += shell_quote(home_dir);
     command += " ./mgrep";
+    if (force_no_color) {
+        command += " --no-color";
+    }
     for (const auto& arg : args) {
         command.push_back(' ');
         command += shell_quote(arg);
@@ -76,7 +80,8 @@ std::string run_mgrep(
 std::string run_mgrep_with_stdin(
     const std::string& input,
     const std::vector<std::string>& args,
-    int* exit_code = nullptr
+    int* exit_code = nullptr,
+    bool force_no_color = true
 )
 {
     static std::atomic<unsigned int> counter{0};
@@ -93,6 +98,9 @@ std::string run_mgrep_with_stdin(
     std::string command = "HOME=";
     command += shell_quote(test_home_without_ignore());
     command += " ./mgrep";
+    if (force_no_color) {
+        command += " --no-color";
+    }
     for (const auto& arg : args) {
         command.push_back(' ');
         command += shell_quote(arg);
@@ -220,11 +228,11 @@ TEST_CASE("Fast recursive search prints matching file paths and respects default
 
     REQUIRE(output.find(display_path(fixture.root / "src" / "one.txt")) != std::string::npos);
     REQUIRE(output.find(display_path(fixture.root / "src" / "nested" / "three.cpp")) != std::string::npos);
-    REQUIRE(output.find((fixture.root / "skip.bin").string()) == std::string::npos);
-    REQUIRE(output.find((fixture.root / "no_extension").string()) == std::string::npos);
-    REQUIRE(output.find((fixture.root / ".git" / "hidden.txt").string()) == std::string::npos);
-    REQUIRE(output.find((fixture.root / "build" / "generated.txt").string()) == std::string::npos);
-    REQUIRE(output.find((fixture.root / "binary.dat").string()) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "skip.bin")) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "no_extension")) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / ".git" / "hidden.txt")) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "build" / "generated.txt")) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "binary.dat")) == std::string::npos);
 }
 
 TEST_CASE("All-files mode includes files skipped by default")
@@ -238,6 +246,96 @@ TEST_CASE("All-files mode includes files skipped by default")
     REQUIRE(output.find(display_path(fixture.root / ".git" / "hidden.txt")) != std::string::npos);
     REQUIRE(output.find(display_path(fixture.root / "build" / "generated.txt")) != std::string::npos);
     REQUIRE(output.find(display_path(fixture.root / "binary.dat")) != std::string::npos);
+}
+
+TEST_CASE("Fast file search skips binary-looking files with late NUL bytes")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path path = fixture.root / "late-nul.txt";
+    write_file(path, "needle before binary marker\n" + std::string(140 * 1024, 'x') + '\0');
+
+    const std::string output = run_mgrep({"needle", path.string()}, &exit_code);
+
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Huge source file output is not emitted before late NUL detection")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path path = fixture.root / "huge-source-late-nul.txt";
+    write_file(
+        path,
+        std::string(2 * 1024 * 1024, 'a') + "needle\n" +
+        std::string(128 * 1024, 'x') + '\0'
+    );
+
+    const std::string output = run_mgrep({"-s", "needle", path.string()}, &exit_code);
+
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Default traversal skips binary extensions case-insensitively")
+{
+    CliFixture fixture;
+
+    write_file(fixture.root / "upper.PNG", "needle uppercase png\n");
+    write_file(fixture.root / "upper.ZIP", "needle uppercase zip\n");
+
+    const std::string default_output = run_mgrep({"-r", "needle", fixture.root.string()});
+    REQUIRE(default_output.find(display_path(fixture.root / "upper.PNG")) == std::string::npos);
+    REQUIRE(default_output.find(display_path(fixture.root / "upper.ZIP")) == std::string::npos);
+
+    const std::string all_files_output = run_mgrep({"-ra", "needle", fixture.root.string()});
+    REQUIRE(all_files_output.find(display_path(fixture.root / "upper.PNG")) != std::string::npos);
+    REQUIRE(all_files_output.find(display_path(fixture.root / "upper.ZIP")) != std::string::npos);
+}
+
+TEST_CASE("Explicit file paths bypass default traversal skips")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+
+    const std::string output = run_mgrep({
+        "needle",
+        (fixture.root / "skip.bin").string(),
+        (fixture.root / "no_extension").string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find(display_path(fixture.root / "skip.bin")) != std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "no_extension")) != std::string::npos);
+}
+
+TEST_CASE("Explicit file path output preserves argument order after batching threshold")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    std::vector<std::string> args = {"-s", "needle"};
+
+    for (int i = 0; i < 96; ++i) {
+        const std::filesystem::path path =
+            fixture.root / ("ordered_" + std::to_string(i) + ".txt");
+        const std::string contents =
+            i < 32 ? std::string(256 * 1024, 'x') + "needle " + std::to_string(i) + "\n"
+                   : "needle " + std::to_string(i) + "\n";
+        write_file(path, contents);
+        args.push_back(path.string());
+    }
+
+    const std::string output = run_mgrep(args, &exit_code);
+    size_t previous_pos = 0;
+
+    REQUIRE(exit_code == 0);
+    for (int i = 0; i < 96; ++i) {
+        const std::string needle = "needle " + std::to_string(i) + "\n";
+        const size_t pos = output.find(needle, previous_pos);
+        REQUIRE(pos != std::string::npos);
+        previous_pos = pos + needle.size();
+    }
 }
 
 TEST_CASE("Home ignore file skips exact files suffixes and directories")
@@ -263,9 +361,9 @@ TEST_CASE("Home ignore file skips exact files suffixes and directories")
     );
 
     REQUIRE(output.find(display_path(fixture.root / "visible.txt")) != std::string::npos);
-    REQUIRE(output.find((fixture.root / "ignored.txt").string()) == std::string::npos);
-    REQUIRE(output.find((fixture.root / "report.generated").string()) == std::string::npos);
-    REQUIRE(output.find((fixture.root / "ignored_dir" / "hit.txt").string()) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "ignored.txt")) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "report.generated")) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "ignored_dir" / "hit.txt")) == std::string::npos);
 }
 
 TEST_CASE("Home ignore suffix rules skip matching directories")
@@ -288,9 +386,51 @@ TEST_CASE("Home ignore suffix rules skip matching directories")
         fake_home.string()
     );
 
-    REQUIRE(output.find((fixture.root / "testing-venv" / "hit.txt").string()) == std::string::npos);
-    REQUIRE(output.find((fixture.root / "testing_venv" / "hit.txt").string()) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "testing-venv" / "hit.txt")) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "testing_venv" / "hit.txt")) == std::string::npos);
     REQUIRE(output.find(display_path(fixture.root / "visible-env" / "hit.txt")) != std::string::npos);
+}
+
+TEST_CASE("Home ignore directory-only suffix rule does not skip matching files")
+{
+    CliFixture fixture;
+    const std::filesystem::path fake_home = fixture.root / "home";
+
+    write_file(fake_home / ".ignore", "*.generated/\n");
+    write_file(fixture.root / "report.generated",
+               "needle file should remain visible\n");
+    write_file(fixture.root / "visible.txt",
+               "needle visible\n");
+
+    const std::string output = run_mgrep(
+        {"-r", "needle", fixture.root.string()},
+        nullptr,
+        fake_home.string()
+    );
+
+    REQUIRE(output.find(display_path(fixture.root / "report.generated")) != std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "visible.txt")) != std::string::npos);
+}
+
+TEST_CASE("Home ignore directory-only suffix rule skips matching directories")
+{
+    CliFixture fixture;
+    const std::filesystem::path fake_home = fixture.root / "home";
+
+    write_file(fake_home / ".ignore", "*.generated/\n");
+    write_file(fixture.root / "report.generated" / "hit.txt",
+               "needle directory should be ignored\n");
+    write_file(fixture.root / "visible.txt",
+               "needle visible\n");
+
+    const std::string output = run_mgrep(
+        {"-r", "needle", fixture.root.string()},
+        nullptr,
+        fake_home.string()
+    );
+
+    REQUIRE(output.find(display_path(fixture.root / "report.generated" / "hit.txt")) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "visible.txt")) != std::string::npos);
 }
 
 TEST_CASE("All-files mode bypasses home ignore file")
@@ -335,6 +475,22 @@ TEST_CASE("Line and source mode separates matches with a blank line")
     const std::string output = run_mgrep({"-rlsn", "needle", fixture.root.string()});
 
     REQUIRE(output.find("2:\tneedle here\n\n") != std::string::npos);
+}
+
+TEST_CASE("Ignore-case search matches ASCII case variants in files")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path path = fixture.root / "case.txt";
+    write_file(path, "Needle mixed case\n");
+
+    std::string output = run_mgrep({"needle", path.string()}, &exit_code);
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+
+    output = run_mgrep({"-i", "needle", path.string()}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == display_path(path) + "\n");
 }
 
 TEST_CASE("Piped stdin is searched when no path is supplied")
@@ -413,6 +569,137 @@ TEST_CASE("Piped stdin supports source option without changing plain source outp
     REQUIRE(output == "needle from stdin\n");
 }
 
+TEST_CASE("Ignore-case stdin search preserves original source text")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nNeedle from stdin\nomega\n",
+        {"-is", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "Needle from stdin\n");
+}
+
+TEST_CASE("Ignore-case count mode counts ASCII case variants")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "Needle one\nno match\nneedle two\nNEEDLE three\n",
+        {"-ic", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "3\n");
+}
+
+TEST_CASE("Ignore-case only-matching output preserves matched casing")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "Needle needle NEEDLE\n",
+        {"-io", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "Needle\nneedle\nNEEDLE\n");
+}
+
+TEST_CASE("Ignore-case invert match excludes ASCII case variants")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "Needle\nother\nNEEDLE\n",
+        {"-iv", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "other\n");
+}
+
+TEST_CASE("Binary-looking stdin is skipped by default")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        std::string("needle before nul\0needle after nul\n", 35),
+        {"needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("All-files mode searches binary-looking stdin")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        std::string("needle before nul\0needle after nul\n", 35),
+        {"-qa", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Quiet mode treats binary-looking stdin as no match by default")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        std::string("needle before nul\0needle after nul\n", 35),
+        {"-q", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Quiet stdin keeps scanning after early match to detect late NUL")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "needle\n" + std::string(256 * 1024, 'x') + '\0',
+        {"-q", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Huge stdin source output is not flushed before late NUL detection")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        std::string(2 * 1024 * 1024, 'a') + "needle\n" +
+        std::string(128 * 1024, 'x') + '\0',
+        {"-s", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Empty pattern matches every stdin line")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nbeta\n",
+        {""},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "alpha\nbeta\n");
+}
+
 TEST_CASE("Piped stdin supports before and after context")
 {
     const std::string output = run_mgrep_with_stdin(
@@ -449,6 +736,25 @@ TEST_CASE("Explicit dash can be mixed with file paths")
     REQUIRE(exit_code == 0);
     REQUIRE(output.find("needle from stdin\n") != std::string::npos);
     REQUIRE(output.find(display_path(fixture.root / "top.txt")) != std::string::npos);
+}
+
+TEST_CASE("Explicit dash preserves argument output order")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "needle from stdin\n",
+        {"-s", "needle", (fixture.root / "top.txt").string(), "-"},
+        &exit_code
+    );
+
+    const size_t file_pos = output.find("needle at root\n");
+    const size_t stdin_pos = output.find("needle from stdin\n");
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(file_pos != std::string::npos);
+    REQUIRE(stdin_pos != std::string::npos);
+    REQUIRE(file_pos < stdin_pos);
 }
 
 TEST_CASE("Explicit dash mixed with files returns no-match status when nothing matches")
@@ -561,6 +867,19 @@ TEST_CASE("Long count option reports stdin matching line count")
     REQUIRE(output == "2\n");
 }
 
+TEST_CASE("Count mode suppresses zero-count stdin output")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nomega\n",
+        {"-c", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
 TEST_CASE("Count mode exits with no-match status when count is zero")
 {
     CliFixture fixture;
@@ -594,6 +913,40 @@ TEST_CASE("Quiet mode returns no-match status without output")
     REQUIRE(output.empty());
 }
 
+TEST_CASE("Quiet mode stops before later missing path after a match")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path missing_path = fixture.root / "missing-after-match.txt";
+
+    const std::string output = run_mgrep({
+        "-q",
+        "needle",
+        (fixture.root / "top.txt").string(),
+        missing_path.string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Quiet mode reports later missing path when no earlier match exists")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path missing_path = fixture.root / "missing-after-miss.txt";
+
+    const std::string output = run_mgrep({
+        "-q",
+        "needle",
+        (fixture.root / "src" / "two.md").string(),
+        missing_path.string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: path does not exist: " + missing_path.string()) != std::string::npos);
+}
+
 TEST_CASE("Long quiet option suppresses stdin output and returns match status")
 {
     int exit_code = -1;
@@ -618,6 +971,37 @@ TEST_CASE("Quiet mode overrides count output")
     REQUIRE(output.empty());
 }
 
+TEST_CASE("Quiet file search honors max-lines limit")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path path = fixture.root / "quiet-max-lines.txt";
+    write_file(path, "first miss\nneedle after limit\n");
+
+    const std::string output = run_mgrep({
+        "-q",
+        "-m", "1",
+        "needle",
+        path.string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Quiet stdin search honors max-lines limit")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "first miss\nneedle after limit\n",
+        {"-q", "-m", "1", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
 TEST_CASE("Files-from searches newline-delimited explicit file paths")
 {
     CliFixture fixture;
@@ -636,6 +1020,93 @@ TEST_CASE("Files-from searches newline-delimited explicit file paths")
     REQUIRE(output.find(display_path(fixture.root / "skip.bin")) != std::string::npos);
     REQUIRE(output.find(display_path(fixture.root / "src" / "two.md")) == std::string::npos);
     REQUIRE(output.find(display_path(fixture.root / "src" / "one.txt")) == std::string::npos);
+}
+
+TEST_CASE("Files-from accepts CRLF-delimited file paths")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path list_path = fixture.root / "crlf-files.txt";
+    write_file(
+        list_path,
+        (fixture.root / "src" / "one.txt").string() + "\r\n"
+    );
+
+    const std::string output = run_mgrep({
+        "--files-from", list_path.string(),
+        "needle here"
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find(display_path(fixture.root / "src" / "one.txt")) != std::string::npos);
+}
+
+TEST_CASE("Files-from output stays before later directory traversal output")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path list_path = fixture.root / "ordered-files-list.txt";
+    const std::filesystem::path dir_path = fixture.root / "ordered-dir";
+    std::string list_contents;
+
+    for (int i = 0; i < 32; ++i) {
+        const std::filesystem::path path =
+            fixture.root / ("listed_ordered_" + std::to_string(i) + ".txt");
+        write_file(path, std::string(256 * 1024, 'x') + "needle listed " + std::to_string(i) + "\n");
+        list_contents += path.string() + "\n";
+    }
+
+    for (int i = 0; i < 96; ++i) {
+        write_file(
+            dir_path / ("dir_ordered_" + std::to_string(i) + ".txt"),
+            "needle directory " + std::to_string(i) + "\n"
+        );
+    }
+
+    write_file(list_path, list_contents);
+
+    const std::string output = run_mgrep({
+        "-s",
+        "--files-from", list_path.string(),
+        "needle",
+        dir_path.string()
+    }, &exit_code);
+
+    const size_t listed_pos = output.find("needle listed 0\n");
+    const size_t dir_pos = output.find("needle directory ");
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(listed_pos != std::string::npos);
+    REQUIRE(dir_pos != std::string::npos);
+    REQUIRE(listed_pos < dir_pos);
+}
+
+TEST_CASE("Mixed files-from operands preserve option order")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path nul_list = fixture.root / "ordered-files-list.nul";
+    const std::filesystem::path newline_list = fixture.root / "ordered-files-list.txt";
+
+    write_file(fixture.root / "listed-from-nul.txt", "needle from nul list\n");
+    write_file(fixture.root / "listed-from-newline.txt", "needle from newline list\n");
+    write_file(nul_list, (fixture.root / "listed-from-nul.txt").string() + '\0');
+    write_file(newline_list, (fixture.root / "listed-from-newline.txt").string() + "\n");
+
+    const std::string output = run_mgrep({
+        "-s",
+        "--files-from0", nul_list.string(),
+        "--files-from", newline_list.string(),
+        "needle"
+    }, &exit_code);
+
+    const size_t nul_pos = output.find("needle from nul list\n");
+    const size_t newline_pos = output.find("needle from newline list\n");
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(nul_pos != std::string::npos);
+    REQUIRE(newline_pos != std::string::npos);
+    REQUIRE(nul_pos < newline_pos);
 }
 
 TEST_CASE("Files-from0 searches NUL-delimited explicit file paths from stdin")
@@ -674,6 +1145,139 @@ TEST_CASE("Files-from reports missing listed files as errors")
     REQUIRE(output.find("ERROR: path does not exist: " + missing_path.string()) != std::string::npos);
 }
 
+TEST_CASE("Files-from continues after a missing listed file")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path missing_path = fixture.root / "missing-before-listed-hit.txt";
+    const std::filesystem::path list_path = fixture.root / "missing-then-hit-files.txt";
+    write_file(
+        list_path,
+        missing_path.string() + "\n" +
+        (fixture.root / "top.txt").string() + "\n"
+    );
+
+    const std::string output = run_mgrep({
+        "-s",
+        "--files-from", list_path.string(),
+        "needle"
+    }, &exit_code);
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: path does not exist: " + missing_path.string()) != std::string::npos);
+    REQUIRE(output.find("needle at root\n") != std::string::npos);
+}
+
+TEST_CASE("Quiet files-from returns success when later listed file matches after an error")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path missing_path = fixture.root / "missing-before-quiet-listed-hit.txt";
+    const std::filesystem::path list_path = fixture.root / "missing-then-quiet-hit-files.txt";
+    write_file(
+        list_path,
+        missing_path.string() + "\n" +
+        (fixture.root / "top.txt").string() + "\n"
+    );
+
+    const std::string output = run_mgrep({
+        "-q",
+        "--files-from", list_path.string(),
+        "needle"
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find("ERROR: path does not exist: " + missing_path.string()) != std::string::npos);
+}
+
+TEST_CASE("Quiet files-from stops before later listed error after a match")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path missing_path = fixture.root / "missing-after-quiet-listed-hit.txt";
+    const std::filesystem::path list_path = fixture.root / "quiet-hit-then-missing-files.txt";
+    write_file(
+        list_path,
+        (fixture.root / "top.txt").string() + "\n" +
+        missing_path.string() + "\n"
+    );
+
+    const std::string output = run_mgrep({
+        "-q",
+        "--files-from", list_path.string(),
+        "needle"
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Quiet mode stops before later files-from operand after a list match")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path first_list = fixture.root / "quiet-first-list-hit.txt";
+    const std::filesystem::path second_list = fixture.root / "quiet-second-list-missing.txt";
+    const std::filesystem::path missing_path = fixture.root / "missing-in-second-list.txt";
+
+    write_file(first_list, (fixture.root / "top.txt").string() + "\n");
+    write_file(second_list, missing_path.string() + "\n");
+
+    const std::string output = run_mgrep({
+        "-q",
+        "--files-from", first_list.string(),
+        "--files-from", second_list.string(),
+        "needle"
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Quiet mode stops before later files-from0 operand after a list match")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path first_list = fixture.root / "quiet-first-list-hit-for-nul.txt";
+    const std::filesystem::path second_list = fixture.root / "quiet-second-list-missing.nul";
+    const std::filesystem::path missing_path = fixture.root / "missing-in-second-nul-list.txt";
+
+    write_file(first_list, (fixture.root / "top.txt").string() + "\n");
+    write_file(second_list, missing_path.string() + '\0');
+
+    const std::string output = run_mgrep({
+        "-q",
+        "--files-from", first_list.string(),
+        "--files-from0", second_list.string(),
+        "needle"
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Quiet files-from reports listed error when no earlier listed file matches")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path missing_path = fixture.root / "missing-after-quiet-listed-miss.txt";
+    const std::filesystem::path list_path = fixture.root / "quiet-miss-then-missing-files.txt";
+    write_file(
+        list_path,
+        (fixture.root / "src" / "two.md").string() + "\n" +
+        missing_path.string() + "\n"
+    );
+
+    const std::string output = run_mgrep({
+        "-q",
+        "--files-from", list_path.string(),
+        "needle"
+    }, &exit_code);
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: path does not exist: " + missing_path.string()) != std::string::npos);
+}
+
 TEST_CASE("Only-matching stdin prints each occurrence on its own line")
 {
     int exit_code = -1;
@@ -685,6 +1289,19 @@ TEST_CASE("Only-matching stdin prints each occurrence on its own line")
 
     REQUIRE(exit_code == 0);
     REQUIRE(output == "needle\nneedle\nneedle\n");
+}
+
+TEST_CASE("Only-matching empty pattern succeeds without zero-length output")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nbeta\n",
+        {"-o", ""},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
 }
 
 TEST_CASE("Only-matching file output keeps path prefix")
@@ -764,6 +1381,19 @@ TEST_CASE("Invert match prints stdin lines that do not contain the pattern")
     REQUIRE(output == "ok\n");
 }
 
+TEST_CASE("Invert match prints stdin when every line does not contain the pattern")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nomega\n",
+        {"-v", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "alpha\nomega\n");
+}
+
 TEST_CASE("Long invert match supports source and line numbers for files")
 {
     CliFixture fixture;
@@ -792,6 +1422,19 @@ TEST_CASE("Invert match default file output prints matching file path once")
     });
 
     REQUIRE(output == display_path(fixture.root / "src" / "one.txt") + "\n");
+}
+
+TEST_CASE("Invert match file output reports files with only non-matching lines")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path path = fixture.root / "invert-all-lines.txt";
+    write_file(path, "alpha\nomega\n");
+
+    const std::string output = run_mgrep({"-v", "needle", path.string()}, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == display_path(path) + "\n");
 }
 
 TEST_CASE("Invert match count mode counts non-matching lines")
@@ -903,34 +1546,181 @@ TEST_CASE("Exit code is two when a search error occurs")
     REQUIRE(output.find("ERROR: path does not exist: " + missing_path.string()) != std::string::npos);
 }
 
-TEST_CASE("Color preset argument is consumed before the pattern")
+TEST_CASE("Search continues after an explicit missing path")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path missing_path = fixture.root / "missing-before-hit.txt";
+
+    const std::string output = run_mgrep({
+        "-s",
+        "needle",
+        missing_path.string(),
+        (fixture.root / "top.txt").string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: path does not exist: " + missing_path.string()) != std::string::npos);
+    REQUIRE(output.find("needle at root\n") != std::string::npos);
+}
+
+TEST_CASE("Quiet mode returns success when a later path matches after an error")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path missing_path = fixture.root / "missing-before-quiet-hit.txt";
+
+    const std::string output = run_mgrep({
+        "-q",
+        "needle",
+        missing_path.string(),
+        (fixture.root / "top.txt").string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find("ERROR: path does not exist: " + missing_path.string()) != std::string::npos);
+}
+
+TEST_CASE("Explicit unreadable file returns a search error")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path unreadable = fixture.root / "unreadable.txt";
+    write_file(unreadable, "needle\n");
+    std::filesystem::permissions(unreadable, std::filesystem::perms::none);
+
+    const std::string output = run_mgrep({"needle", unreadable.string()}, &exit_code);
+
+    std::filesystem::permissions(
+        unreadable,
+        std::filesystem::perms::owner_read | std::filesystem::perms::owner_write
+    );
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: could not read file: " + unreadable.string()) != std::string::npos);
+}
+
+TEST_CASE("Files-from unreadable file returns a search error")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path unreadable = fixture.root / "unreadable-list-entry.txt";
+    const std::filesystem::path list_path = fixture.root / "unreadable-files.txt";
+    write_file(unreadable, "needle\n");
+    write_file(list_path, unreadable.string() + "\n");
+    std::filesystem::permissions(unreadable, std::filesystem::perms::none);
+
+    const std::string output = run_mgrep({
+        "--files-from", list_path.string(),
+        "needle"
+    }, &exit_code);
+
+    std::filesystem::permissions(
+        unreadable,
+        std::filesystem::perms::owner_read | std::filesystem::perms::owner_write
+    );
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: could not read file: " + unreadable.string()) != std::string::npos);
+}
+
+TEST_CASE("Explicit unreadable directory returns a search error")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path unreadable_dir = fixture.root / "unreadable-dir";
+    write_file(unreadable_dir / "hit.txt", "needle\n");
+    std::filesystem::permissions(unreadable_dir, std::filesystem::perms::none);
+
+    const std::string output = run_mgrep({"-r", "needle", unreadable_dir.string()}, &exit_code);
+
+    std::filesystem::permissions(
+        unreadable_dir,
+        std::filesystem::perms::owner_all
+    );
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: could not read directory: " + unreadable_dir.string()) != std::string::npos);
+}
+
+TEST_CASE("Color output is enabled by default")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+
+    const std::string output = run_mgrep(
+        {"-s", "needle here", (fixture.root / "src" / "one.txt").string()},
+        &exit_code,
+        test_home_without_ignore(),
+        false
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find("\033[38;5;75mone.txt\033[0m") != std::string::npos);
+    REQUIRE(output.find("\033[38;5;81mneedle here\033[0m") != std::string::npos);
+}
+
+TEST_CASE("No-color option disables ANSI output")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+
+    const std::string output = run_mgrep(
+        {"--no-color", "needle here", (fixture.root / "src" / "one.txt").string()},
+        &exit_code,
+        test_home_without_ignore(),
+        false
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find("\033[") == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "src" / "one.txt")) != std::string::npos);
+}
+
+TEST_CASE("Theme option selects red output")
 {
     CliFixture fixture;
 
-    const std::string output = run_mgrep({"-rpls", "red", "needle here", fixture.root.string()});
+    const std::string output = run_mgrep({"-rls", "-t", "red", "needle here", fixture.root.string()});
 
-    REQUIRE(output.find("\033[38;5;203mone.txt\033[0m") != std::string::npos);
-    REQUIRE(output.find("\033[38;5;167m2:\033[0m\t\033[38;5;210mneedle here\033[0m") != std::string::npos);
+    REQUIRE(output.find("\033[38;5;196mone.txt\033[0m") != std::string::npos);
+    REQUIRE(output.find("\033[38;5;124m2:\033[0m\t\033[38;5;217mneedle here\033[0m") != std::string::npos);
 }
 
 TEST_CASE("Purple color preset is supported")
 {
     CliFixture fixture;
 
-    const std::string output = run_mgrep({"-rpls", "purple", "needle here", fixture.root.string()});
+    const std::string output = run_mgrep({"-rls", "--theme", "purple", "needle here", fixture.root.string()});
 
     REQUIRE(output.find("\033[38;5;141mone.txt\033[0m") != std::string::npos);
     REQUIRE(output.find("\033[38;5;98m2:\033[0m\t\033[38;5;177mneedle here\033[0m") != std::string::npos);
 }
 
-TEST_CASE("Long pretty option consumes color preset before the pattern")
+TEST_CASE("Pretty option remains a color-on compatibility alias")
 {
     CliFixture fixture;
 
-    const std::string output = run_mgrep({"-rls", "--pretty", "red", "needle here", fixture.root.string()});
+    const std::string output = run_mgrep({"-rls", "--pretty", "needle here", fixture.root.string()});
 
-    REQUIRE(output.find("\033[38;5;203mone.txt\033[0m") != std::string::npos);
-    REQUIRE(output.find("\033[38;5;167m2:\033[0m\t\033[38;5;210mneedle here\033[0m") != std::string::npos);
+    REQUIRE(output.find("\033[38;5;75mone.txt\033[0m") != std::string::npos);
+    REQUIRE(output.find("\033[38;5;37m2:\033[0m\t\033[38;5;81mneedle here\033[0m") != std::string::npos);
+}
+
+TEST_CASE("Color-name pattern is not consumed as a theme")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+
+    write_file(fixture.root / "red.txt", "red\nblue\n");
+
+    const std::string output = run_mgrep(
+        {"red", (fixture.root / "red.txt").string()},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find(display_path(fixture.root / "red.txt")) != std::string::npos);
 }
 
 TEST_CASE("Short count option no longer consumes color presets")
@@ -942,7 +1732,7 @@ TEST_CASE("Short count option no longer consumes color presets")
     const std::string output = run_mgrep({"-rc", "red", fixture.root.string()});
 
     REQUIRE(output.find(display_path(fixture.root / "red.txt") + "\t2\n") != std::string::npos);
-    REQUIRE(output.find("\033[38;5;203m") == std::string::npos);
+    REQUIRE(output.find("\033[38;5;196m") == std::string::npos);
 }
 
 TEST_CASE("Before and after context are printed around matched lines")
@@ -956,6 +1746,80 @@ TEST_CASE("Before and after context are printed around matched lines")
     REQUIRE(output.find("omega\n") != std::string::npos);
 }
 
+TEST_CASE("File context output includes matched source without source option")
+{
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "context-without-source.txt";
+    write_file(path, "before\nneedle here\nafter\n");
+
+    const std::string output = run_mgrep({
+        "-B", "1",
+        "-A", "1",
+        "needle",
+        path.string()
+    });
+
+    const std::string expected =
+        "before\n" +
+        display_path(path) + "\nneedle here\n"
+        "after\n";
+    REQUIRE(output == expected);
+}
+
+TEST_CASE("File context output includes matched line number without source option")
+{
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "context-line-without-source.txt";
+    write_file(path, "before\nneedle here\nafter\n");
+
+    const std::string output = run_mgrep({
+        "-l",
+        "-B", "1",
+        "-A", "1",
+        "needle",
+        path.string()
+    });
+
+    const std::string expected =
+        "before\n" +
+        display_path(path) + "\n2:\tneedle here\n"
+        "after\n";
+    REQUIRE(output == expected);
+}
+
+TEST_CASE("Overlapping file context does not duplicate source lines")
+{
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "context-overlap.txt";
+    write_file(path, "before\nneedle one\nmiddle\nneedle two\nafter\n");
+
+    const std::string output = run_mgrep({
+        "-s",
+        "-B", "1",
+        "-A", "1",
+        "needle",
+        path.string()
+    });
+
+    const std::string expected =
+        "before\n" +
+        display_path(path) + "\nneedle one\n"
+        "middle\n" +
+        display_path(path) + "\nneedle two\n"
+        "after\n";
+    REQUIRE(output == expected);
+}
+
+TEST_CASE("Overlapping stdin context does not duplicate source lines")
+{
+    const std::string output = run_mgrep_with_stdin(
+        "before\nneedle one\nmiddle\nneedle two\nafter\n",
+        {"-B", "1", "-A", "1", "needle"}
+    );
+
+    REQUIRE(output == "before\nneedle one\nmiddle\nneedle two\nafter\n");
+}
+
 TEST_CASE("Max-lines option stops scanning after the requested line count")
 {
     CliFixture fixture;
@@ -966,6 +1830,59 @@ TEST_CASE("Max-lines option stops scanning after the requested line count")
     REQUIRE(output.find("needle nested") == std::string::npos);
 }
 
+TEST_CASE("Invalid numeric options are rejected")
+{
+    int exit_code = -1;
+
+    std::string output = run_mgrep_with_stdin(
+        "needle\n",
+        {"-A", "-1", "needle"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: invalid after-context value: -1") != std::string::npos);
+
+    output = run_mgrep_with_stdin(
+        "needle\n",
+        {"-B", "abc", "needle"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: invalid before-context value: abc") != std::string::npos);
+
+    output = run_mgrep_with_stdin(
+        "needle\n",
+        {"-m", "abc", "needle"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: invalid max-lines value: abc") != std::string::npos);
+
+    output = run_mgrep_with_stdin(
+        "needle\n",
+        {"-m", "-1", "needle"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: invalid max-lines value: -1") != std::string::npos);
+
+    output = run_mgrep_with_stdin(
+        "needle\n",
+        {"-A", " 1", "needle"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: invalid after-context value:  1") != std::string::npos);
+
+    output = run_mgrep_with_stdin(
+        "needle\n",
+        {"-m", "+1", "needle"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: invalid max-lines value: +1") != std::string::npos);
+}
+
 TEST_CASE("Non-recursive directory search does not descend into child directories")
 {
     CliFixture fixture;
@@ -973,20 +1890,57 @@ TEST_CASE("Non-recursive directory search does not descend into child directorie
     const std::string output = run_mgrep({"needle", fixture.root.string()});
 
     REQUIRE(output.find(display_path(fixture.root / "top.txt")) != std::string::npos);
-    REQUIRE(output.find((fixture.root / "src" / "one.txt").string()) == std::string::npos);
-    REQUIRE(output.find((fixture.root / "src" / "nested" / "three.cpp").string()) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "src" / "one.txt")) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "src" / "nested" / "three.cpp")) == std::string::npos);
+}
+
+TEST_CASE("Directory operands preserve command-line order")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path first_dir = fixture.root / "first-dir";
+    const std::filesystem::path second_dir = fixture.root / "second-dir";
+
+    for (int i = 0; i < 64; ++i) {
+        write_file(
+            first_dir / ("slow_" + std::to_string(i) + ".txt"),
+            std::string(256 * 1024, 'x') + "needle first " + std::to_string(i) + "\n"
+        );
+    }
+
+    for (int i = 0; i < 64; ++i) {
+        write_file(
+            second_dir / ("fast_" + std::to_string(i) + ".txt"),
+            "needle second " + std::to_string(i) + "\n"
+        );
+    }
+
+    const std::string output = run_mgrep({
+        "-rs",
+        "needle",
+        first_dir.string(),
+        second_dir.string()
+    }, &exit_code);
+
+    const size_t first_pos = output.find("needle first ");
+    const size_t second_pos = output.find("needle second ");
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(first_pos != std::string::npos);
+    REQUIRE(second_pos != std::string::npos);
+    REQUIRE(first_pos < second_pos);
 }
 
 TEST_CASE("Recursive search does not follow symlinked directories")
 {
     CliFixture fixture;
 
-    write_file(fixture.root / ".hidden_target" / "linked.txt",
+    write_file(fixture.root / "link_target" / "linked.txt",
                "needle through symlink\n");
 
     std::error_code ec;
     std::filesystem::create_directory_symlink(
-        fixture.root / ".hidden_target",
+        fixture.root / "link_target",
         fixture.root / "visible_link",
         ec
     );
@@ -996,8 +1950,31 @@ TEST_CASE("Recursive search does not follow symlinked directories")
 
     const std::string output = run_mgrep({"-r", "needle through symlink", fixture.root.string()});
 
-    REQUIRE(output.find((fixture.root / "visible_link" / "linked.txt").string()) == std::string::npos);
-    REQUIRE(output.find((fixture.root / ".hidden_target" / "linked.txt").string()) == std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "link_target" / "linked.txt")) != std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "visible_link" / "linked.txt")) == std::string::npos);
+}
+
+TEST_CASE("Directory traversal searches symlinks to regular files")
+{
+    CliFixture fixture;
+    const std::filesystem::path outside_dir = fixture.root / "outside-target";
+    const std::filesystem::path search_dir = fixture.root / "symlink-search";
+    const std::filesystem::path target = outside_dir / "target.txt";
+    const std::filesystem::path link = search_dir / "linked.txt";
+
+    write_file(target, "needle through linked file\n");
+    std::filesystem::create_directories(search_dir);
+
+    std::error_code ec;
+    std::filesystem::create_symlink(target, link, ec);
+    if (ec) {
+        return;
+    }
+
+    const std::string output = run_mgrep({"-r", "needle through linked file", search_dir.string()});
+
+    REQUIRE(output.find(display_path(link)) != std::string::npos);
+    REQUIRE(output.find(display_path(target)) == std::string::npos);
 }
 
 TEST_CASE("Patterns are treated as fixed strings, not regular expressions")
@@ -1034,10 +2011,10 @@ TEST_CASE("Advanced color overrides replace preset component colors")
     CliFixture fixture;
 
     const std::string output = run_mgrep({
-        "-rpls",
+        "-rls",
+        "-t", "red",
         "--colors", "match:fg:magenta",
         "--colors", "line:fg:cyan",
-        "red",
         "needle here",
         fixture.root.string()
     });
@@ -1051,7 +2028,7 @@ TEST_CASE("Advanced color styles compose with color overrides")
     CliFixture fixture;
 
     const std::string output = run_mgrep({
-        "-rpls",
+        "-rls",
         "--colors", "match:style:bold",
         "--colors", "match:fg:cyan",
         "needle here",
@@ -1059,6 +2036,21 @@ TEST_CASE("Advanced color styles compose with color overrides")
     });
 
     REQUIRE(output.find("\033[1m\033[38;5;51mneedle here\033[0m") != std::string::npos);
+}
+
+TEST_CASE("Invalid theme fails before searching")
+{
+    CliFixture fixture;
+    int exit_code = 0;
+
+    const std::string output = run_mgrep({
+        "--theme", "not-a-theme",
+        "needle",
+        fixture.root.string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: invalid theme: not-a-theme") != std::string::npos);
 }
 
 TEST_CASE("Invalid advanced color overrides fail before searching")

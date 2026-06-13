@@ -57,4 +57,5 @@ void traverse_dir_worker(DirectoryTraversalWork& traversal);
 void collect_search_files_one_dir(std::string& root, DirectoryTraversalWork& traversal);
 void collect_search_files(const std::string& root, SearchWork& work);
 void add_search_path(SearchWork& work, const std::string& path);
+void add_search_paths(SearchWork& work, std::vector<std::string>& paths);
 size_t finish_search(SearchWork& work);

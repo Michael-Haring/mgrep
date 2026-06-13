@@ -51,6 +51,7 @@ void load_home_ignore(IgnoreRules& rules)
     rules.exact_names.reserve(32);
     rules.dir_names.reserve(16);
     rules.suffixes.reserve(16);
+    rules.dir_suffixes.reserve(8);
 
     std::string line;
     while (std::getline(input, line)) {
@@ -70,6 +71,10 @@ void load_home_ignore(IgnoreRules& rules)
         }
 
         if (rule.size() > 1 && rule.front() == '*') {
+            if (dir_only) {
+                rules.dir_suffixes.emplace_back(rule.substr(1));
+                continue;
+            }
             rules.suffixes.emplace_back(rule.substr(1));
         } else if (dir_only) {
             rules.dir_names.emplace_back(rule);
@@ -88,27 +93,48 @@ bool should_skip_file(std::string_view name)
     }
 
     const std::string_view ext(name.data() + dot_pos, name.size() - dot_pos);
+    auto ext_equals = [ext](std::string_view value) {
+        if (ext.size() != value.size()) {
+            return false;
+        }
+
+        for (size_t i = 0; i < ext.size(); ++i) {
+            char lhs = ext[i];
+            char rhs = value[i];
+            if (lhs >= 'A' && lhs <= 'Z') {
+                lhs = static_cast<char>(lhs + ('a' - 'A'));
+            }
+            if (rhs >= 'A' && rhs <= 'Z') {
+                rhs = static_cast<char>(rhs + ('a' - 'A'));
+            }
+            if (lhs != rhs) {
+                return false;
+            }
+        }
+
+        return true;
+    };
 
     switch (ext.size()) {
         case 2:
-            return ext == ".a" || ext == ".o";
+            return ext_equals(".a") || ext_equals(".o");
         case 3:
-            return ext == ".so" || ext == ".db" || ext == ".gz" ||
-                ext == ".xz" || ext == ".7z";
+            return ext_equals(".so") || ext_equals(".db") || ext_equals(".gz") ||
+                ext_equals(".xz") || ext_equals(".7z");
         case 4:
-            return ext == ".exe" || ext == ".dll" || ext == ".bin" ||
-                ext == ".png" || ext == ".jpg" || ext == ".JPG" ||
-                ext == ".pdf" || ext == ".pyc" || ext == ".zip" || ext == ".tar" ||
-                ext == ".jar" || ext == ".mp3" || ext == ".mp4" ||
-                ext == ".mov" || ext == ".avi" || ext == ".gif" ||
-                ext == ".bmp" || ext == ".ico" || ext == ".ttf" ||
-                ext == ".otf";
+            return ext_equals(".exe") || ext_equals(".dll") || ext_equals(".bin") ||
+                ext_equals(".png") || ext_equals(".jpg") ||
+                ext_equals(".pdf") || ext_equals(".pyc") || ext_equals(".zip") || ext_equals(".tar") ||
+                ext_equals(".jar") || ext_equals(".mp3") || ext_equals(".mp4") ||
+                ext_equals(".mov") || ext_equals(".avi") || ext_equals(".gif") ||
+                ext_equals(".bmp") || ext_equals(".ico") || ext_equals(".ttf") ||
+                ext_equals(".otf");
         case 5:
-            return ext == ".jpeg" || ext == ".webp" || ext == ".class";
+            return ext_equals(".jpeg") || ext_equals(".webp") || ext_equals(".class");
         case 6:
-            return ext == ".cmake" || ext == ".dylib";
+            return ext_equals(".cmake") || ext_equals(".dylib");
         case 7:
-            return ext == ".sqlite" || ext == ".sqlite3";
+            return ext_equals(".sqlite") || ext_equals(".sqlite3");
         default:
             return false;
     }
@@ -163,6 +189,12 @@ bool should_ignore_dir(std::string_view name, const IgnoreRules& rules)
     }
 
     for (const auto& suffix : rules.suffixes) {
+        if (string_view_ends_with(name, suffix)) {
+            return true;
+        }
+    }
+
+    for (const auto& suffix : rules.dir_suffixes) {
         if (string_view_ends_with(name, suffix)) {
             return true;
         }

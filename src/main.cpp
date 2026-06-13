@@ -5,6 +5,7 @@
 
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iostream>
 #include <istream>
@@ -18,6 +19,16 @@ bool check_user_root(std::filesystem::path& root)
 
     if (!std::filesystem::exists(root, ec)) {
         std::cerr << "ERROR: path does not exist: " << root.string() << "\n";
+        return false;
+    }
+
+    if (std::filesystem::is_regular_file(root, ec) && ::access(root.c_str(), R_OK) != 0) {
+        std::cerr << "ERROR: could not read file: " << root.string() << "\n";
+        return false;
+    }
+
+    if (std::filesystem::is_directory(root, ec) && ::access(root.c_str(), R_OK | X_OK) != 0) {
+        std::cerr << "ERROR: could not read directory: " << root.string() << "\n";
         return false;
     }
 
@@ -38,31 +49,53 @@ bool add_explicit_file(const std::string& path, SearchWork& work)
         return false;
     }
 
-    add_search_path(work, path);
+    if (::access(path.c_str(), R_OK) != 0) {
+        std::cerr << "ERROR: could not read file: " << path << "\n";
+        return false;
+    }
+
+    work.small_paths.push_back(path);
     return true;
 }
 
-bool process_file_list_stream(std::istream& input, char delimiter, SearchWork& work)
+bool process_file_list_stream(
+    std::istream& input,
+    char delimiter,
+    SearchWork& work,
+    const std::function<bool()>& stop_after_add
+)
 {
     std::string path;
+    bool had_error = false;
 
     while (std::getline(input, path, delimiter)) {
+        if (delimiter == '\n' && !path.empty() && path.back() == '\r') {
+            path.pop_back();
+        }
+
         if (path.empty()) {
             continue;
         }
 
         if (!add_explicit_file(path, work)) {
-            return false;
+            had_error = true;
+        } else if (stop_after_add()) {
+            return !had_error;
         }
     }
 
-    return true;
+    return !had_error;
 }
 
-bool process_file_list(const std::string& list_path, char delimiter, SearchWork& work)
+bool process_file_list(
+    const std::string& list_path,
+    char delimiter,
+    SearchWork& work,
+    const std::function<bool()>& stop_after_add
+)
 {
     if (list_path == "-") {
-        return process_file_list_stream(std::cin, delimiter, work);
+        return process_file_list_stream(std::cin, delimiter, work, stop_after_add);
     }
 
     std::ifstream input(list_path, std::ios::binary);
@@ -71,7 +104,7 @@ bool process_file_list(const std::string& list_path, char delimiter, SearchWork&
         return false;
     }
 
-    return process_file_list_stream(input, delimiter, work);
+    return process_file_list_stream(input, delimiter, work, stop_after_add);
 }
 
 int main(int argc, char* argv[])
@@ -81,14 +114,14 @@ int main(int argc, char* argv[])
 
     UserOptions user_stats;
     const ParseResult parse_result = parse_user_options(argc, argv, user_stats);
-    if (!parse_result.ok || user_stats.pattern.empty()) {
+    if (!parse_result.ok) {
         return parse_result.exit_code;
     }
 
     int first_path_arg = parse_result.first_path_arg;
 
     const bool has_file_list_input =
-        !user_stats.files_from.empty() || !user_stats.files_from0.empty();
+        !user_stats.file_lists.empty();
     const bool has_path_args = first_path_arg < argc;
     if (!has_file_list_input && !has_path_args && !::isatty(STDIN_FILENO)) {
         search_stdin(user_stats);
@@ -107,50 +140,100 @@ int main(int argc, char* argv[])
     SearchWork work(user_stats);
     work.read_file = choose_read_file(user_stats);
     bool had_error = false;
+    bool ordered_files_pending = false;
+    size_t completed_batches = 0;
 
-    for (const auto& list_path : user_stats.files_from) {
-        if (!process_file_list(list_path, '\n', work)) {
-            had_error = true;
+    auto finish_pending_work = [&]() {
+        completed_batches += finish_search(work);
+        work.small_paths.clear();
+        work.batch.clear();
+        work.tp.reset();
+        work.stop_requested.store(false, std::memory_order_relaxed);
+        work.read_file = choose_read_file(user_stats);
+        ordered_files_pending = false;
+    };
+
+    auto has_pending_work = [&]() {
+        return work.tp != nullptr || !work.small_paths.empty() || !work.batch.empty();
+    };
+
+    auto stop_quiet_after_file_list_add = [&]() {
+        if (!user_stats.quiet) {
+            return false;
+        }
+        finish_pending_work();
+        return matches > 0;
+    };
+
+    for (const auto& file_list : user_stats.file_lists) {
+        if (user_stats.quiet && matches > 0) {
             break;
         }
-    }
 
-    if (!had_error) {
-        for (const auto& list_path : user_stats.files_from0) {
-            if (!process_file_list(list_path, '\0', work)) {
-                had_error = true;
-                break;
-            }
+        if (!process_file_list(
+                file_list.first,
+                file_list.second,
+                work,
+                stop_quiet_after_file_list_add)) {
+            had_error = true;
+        }
+        if (has_pending_work()) {
+            ordered_files_pending = true;
         }
     }
 
     for (int i = first_path_arg; i < argc; ++i) {
-        if (had_error) {
+        if (user_stats.quiet && matches > 0) {
             break;
         }
 
+        if (user_stats.quiet && has_pending_work()) {
+            finish_pending_work();
+            if (matches > 0) {
+                break;
+            }
+        }
+
         if (std::strcmp(argv[i], "-") == 0) {
+            finish_pending_work();
+            if (user_stats.quiet && matches > 0) {
+                break;
+            }
             search_stdin(user_stats);
+            if (user_stats.quiet && matches > 0) {
+                break;
+            }
             continue;
         }
 
         std::filesystem::path root = argv[i];
 
         if (check_user_root(root)) {
-            collect_search_files(root.string(), work);
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(root, ec)) {
+                if (work.tp) {
+                    finish_pending_work();
+                }
+                work.small_paths.push_back(root.string());
+                ordered_files_pending = true;
+            } else {
+                if (has_pending_work()) {
+                    finish_pending_work();
+                }
+                collect_search_files(root.string(), work);
+            }
         } else {
             had_error = true;
-            break;
         }
     }
 
-    const size_t completed_batches = finish_search(work);
+    finish_pending_work();
 
     if (user_stats.is_verbose && !user_stats.quiet) {
         cout << "Completed " << completed_batches << " batches and found " << matches << " matches\n";
     }
 
-    if (had_error) {
+    if (had_error && !(user_stats.quiet && matches > 0)) {
         return MGREP_EXIT_ERROR;
     }
 

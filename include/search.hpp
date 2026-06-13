@@ -12,6 +12,21 @@ extern size_t matches;
 
 using ReadFileFn = size_t (*)(const std::string&, UserOptions&, std::string&);
 
+struct DirectOutputPiece {
+    const char* data;
+    size_t size;
+};
+
+using DirectOutputFn = void (*)(
+    void* context,
+    std::string& output,
+    const DirectOutputPiece* pieces,
+    size_t piece_count
+);
+
+void set_direct_output_context(DirectOutputFn fn, void* context);
+void clear_direct_output_context();
+
 size_t read_file_fast(const std::string& path, UserOptions& user_stats, std::string& output);
 size_t read_file_line_options(const std::string& path, UserOptions& user_stats, std::string& output);
 size_t read_file_count(const std::string& path, UserOptions& user_stats, std::string& output);

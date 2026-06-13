@@ -8,6 +8,7 @@ struct IgnoreRules {
     std::vector<std::string> exact_names;
     std::vector<std::string> dir_names;
     std::vector<std::string> suffixes;
+    std::vector<std::string> dir_suffixes;
 };
 
 void load_home_ignore(IgnoreRules& rules);

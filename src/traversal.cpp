@@ -3,13 +3,88 @@
 #include "ignore.hpp"
 #include "output.hpp"
 
+#include <array>
+#include <cerrno>
 #include <dirent.h>
 #include <iostream>
+#include <iterator>
+#include <sys/uio.h>
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
 
 using std::cout;
+
+namespace {
+
+void write_direct_stdout(std::string& output, const DirectOutputPiece* pieces, size_t piece_count)
+{
+    std::array<iovec, 16> iov{};
+    size_t iov_count = 0;
+
+    if (!output.empty()) {
+        iov[iov_count++] = {
+            const_cast<char*>(output.data()),
+            output.size()
+        };
+    }
+
+    for (size_t i = 0; i < piece_count && iov_count < iov.size(); ++i) {
+        if (pieces[i].size == 0) {
+            continue;
+        }
+
+        iov[iov_count++] = {
+            const_cast<char*>(pieces[i].data),
+            pieces[i].size
+        };
+    }
+
+    size_t iov_start = 0;
+    while (iov_start < iov_count) {
+        const ssize_t bytes_written = ::writev(
+            STDOUT_FILENO,
+            iov.data() + iov_start,
+            static_cast<int>(iov_count - iov_start)
+        );
+        if (bytes_written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        if (bytes_written == 0) {
+            break;
+        }
+
+        size_t remaining = static_cast<size_t>(bytes_written);
+        while (iov_start < iov_count && remaining >= iov[iov_start].iov_len) {
+            remaining -= iov[iov_start].iov_len;
+            ++iov_start;
+        }
+        if (remaining > 0 && iov_start < iov_count) {
+            iov[iov_start].iov_base = static_cast<char*>(iov[iov_start].iov_base) + remaining;
+            iov[iov_start].iov_len -= remaining;
+        }
+    }
+
+    output.clear();
+}
+
+void direct_output_threaded(
+    void* context,
+    std::string& output,
+    const DirectOutputPiece* pieces,
+    size_t piece_count
+)
+{
+    auto& tp = *static_cast<ThreadPool*>(context);
+    std::lock_guard<std::mutex> lock(tp.m_cout_mtx);
+    cout.flush();
+    write_direct_stdout(output, pieces, piece_count);
+}
+
+} // namespace
 
 void flush_output(ThreadPool& tp, std::string& output, size_t& local_matches)
 {
@@ -39,6 +114,7 @@ void push_file_batch(
         std::string output;
         output.reserve(8192);
         size_t local_matches = 0;
+        set_direct_output_context(direct_output_threaded, &tp);
 
         for (const auto& path : files) {
             if (user_stats.quiet && stop_requested.load(std::memory_order_relaxed)) {
@@ -57,6 +133,7 @@ void push_file_batch(
             }
         }
 
+        clear_direct_output_context();
         flush_output(tp, output, local_matches);
     });
 
@@ -70,7 +147,10 @@ void add_search_path(SearchWork& work, const std::string& path)
         return;
     }
 
-    if (!work.tp && work.small_paths.size() < SINGLE_THREAD_FILE_LIMIT) {
+    const size_t single_thread_limit =
+        work.user_stats.recursive_mode ? FILE_BATCH_SIZE : SINGLE_THREAD_FILE_LIMIT;
+
+    if (!work.tp && work.small_paths.size() < single_thread_limit) {
         work.small_paths.push_back(path);
         return;
     }
@@ -102,6 +182,65 @@ void add_search_path(SearchWork& work, const std::string& path)
     }
 }
 
+void add_search_paths(SearchWork& work, std::vector<std::string>& paths)
+{
+    if (paths.empty() ||
+        (work.user_stats.quiet && work.stop_requested.load(std::memory_order_relaxed))) {
+        return;
+    }
+
+    const size_t single_thread_limit =
+        work.user_stats.recursive_mode ? FILE_BATCH_SIZE : SINGLE_THREAD_FILE_LIMIT;
+
+    auto start_thread_pool = [&]() {
+        work.tp = std::make_unique<ThreadPool>();
+
+        for (auto& small_path : work.small_paths) {
+            work.batch.push_back(std::move(small_path));
+
+            if (work.batch.size() >= FILE_BATCH_SIZE) {
+                push_file_batch(
+                    work.batch,
+                    *work.tp,
+                    work.user_stats,
+                    work.read_file,
+                    work.stop_requested
+                );
+            }
+        }
+
+        work.small_paths.clear();
+    };
+
+    if (!work.tp && work.small_paths.size() + paths.size() <= single_thread_limit) {
+        work.small_paths.insert(
+            work.small_paths.end(),
+            std::make_move_iterator(paths.begin()),
+            std::make_move_iterator(paths.end())
+        );
+        paths.clear();
+        return;
+    }
+
+    if (!work.tp) {
+        start_thread_pool();
+    }
+
+    for (auto& path : paths) {
+        if (work.user_stats.quiet && work.stop_requested.load(std::memory_order_relaxed)) {
+            break;
+        }
+
+        work.batch.push_back(std::move(path));
+
+        if (work.batch.size() >= FILE_BATCH_SIZE) {
+            push_file_batch(work.batch, *work.tp, work.user_stats, work.read_file, work.stop_requested);
+        }
+    }
+
+    paths.clear();
+}
+
 size_t finish_search(SearchWork& work)
 {
     if (!work.tp) {
@@ -125,13 +264,7 @@ void collect_search_files(
     }
 
     if (S_ISREG(st.st_mode)) {
-        const size_t name_pos = filename_pos(root);
-        const std::string_view name(root.data() + name_pos, root.size() - name_pos);
-
-        if (work.user_stats.all_files ||
-            (!should_skip_file(name) && !should_ignore_file(name, work.user_stats.ignore_rules))) {
-            add_search_path(work, root);
-        }
+        add_search_path(work, root);
         return;
     }
 
@@ -174,7 +307,11 @@ void collect_search_files_recursive(
         unsigned char type = entry->d_type;
 
         if (type == DT_LNK) {
-            continue;
+            struct stat st{};
+            if (::fstatat(dir_fd, name, &st, 0) != 0 || !S_ISREG(st.st_mode)) {
+                continue;
+            }
+            type = DT_REG;
         }
 
         if (type == DT_UNKNOWN) {
@@ -256,7 +393,11 @@ void collect_search_files_one_dir(
         unsigned char type = entry->d_type;
 
         if (type == DT_LNK) {
-            continue;
+            struct stat st{};
+            if (::fstatat(dir_fd, name, &st, 0) != 0 || !S_ISREG(st.st_mode)) {
+                continue;
+            }
+            type = DT_REG;
         }
 
         if (type == DT_UNKNOWN) {
@@ -309,13 +450,7 @@ void collect_search_files_one_dir(
 
     if (!found_files.empty()) {
         std::lock_guard<std::mutex> lock(traversal.search_mtx);
-        for (const auto& file : found_files) {
-            if (traversal.search.user_stats.quiet &&
-                traversal.search.stop_requested.load(std::memory_order_relaxed)) {
-                break;
-            }
-            add_search_path(traversal.search, file);
-        }
+        add_search_paths(traversal.search, found_files);
     }
 
     if (!child_dirs.empty() &&

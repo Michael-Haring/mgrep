@@ -4,6 +4,7 @@
 #include "ignore.hpp"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 inline constexpr int MGREP_EXIT_MATCH_FOUND = 0;
@@ -12,13 +13,15 @@ inline constexpr int MGREP_EXIT_ERROR = 2;
 
 struct UserOptions {
     std::string pattern = "";
+    std::string folded_pattern = "";
     std::vector<std::string> files_from;
     std::vector<std::string> files_from0;
+    std::vector<std::pair<std::string, char>> file_lists;
     ColorTheme colors;
     IgnoreRules ignore_rules;
     bool recursive_mode = false;
     bool is_verbose = false;
-    bool cool_colors = false;
+    bool cool_colors = true;
     bool source_print = false;
     bool line_number_print = false;
     bool add_newline = false;
@@ -27,6 +30,7 @@ struct UserOptions {
     bool quiet = false;
     bool only_matching = false;
     bool invert_match = false;
+    bool ignore_case = false;
     unsigned int print_before_source = 0;
     unsigned int print_after_source = 0;
     unsigned int max_lines = 0;

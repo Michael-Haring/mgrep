@@ -46,9 +46,9 @@ Finally you can run the almighty mgrep...
 
 If that works and you want it to be callable, the same as grep, ripgrep, time, ls or any of these various commands at your disposal:
 Put the mgrep executable in your /usr/local/bin. cp the executable into that dir. Assuming you are in the executables directory you could do:
-'''
+```
 sudo cp ./mgrep /usr/local/bin/mgrep
-'''
+```
 then type your password to gain permission to do this. After this, you should be able to call mgrep like any other linux command. Alias' can then be made in your ~/.bashrc file so a simple "mg" expands to something like mgrep -rclsn or whatever colors you want.
 
 ### Catch2 Test Suite
@@ -80,18 +80,22 @@ Efforts have been made to include features that I have never once used, but that
 The legendary getopt provides us with several options in this program
 1. -h Prints help text, shows user options and how to use the program
 2. -v / --invert-match Prints lines that do not contain the pattern
-3. --verbose Enables verbose output, things like the total files searched and total matches found
-4. -r Enables recursive search mode, if a dir is found, mgrep will search that dir as well
-5. -p Enables cool colors
-6. -c Prints matching line counts instead of normal matches
-7. -q Prints nothing, only returns match status
-8. -o Prints only matching text, one occurrence per line
-9. --files-from FILE Reads newline-delimited input file paths from FILE
-10. --files-from0 FILE / --null-files-from FILE Reads NUL-delimited input file paths from FILE
-11. -n Adds an aditional newline between pattern finds. Default is 1 like grep
-12. -l Prints the line number of the file the pattern was found
-13. -s Prints the line of source cose that contained the pattern
-14. -a Searches ALL files. A handful are skipped by default:
+3. -i / --ignore-case Matches ASCII letters case-insensitively
+4. --verbose Enables verbose output, things like the total files searched and total matches found
+5. -r Enables recursive search mode, if a dir is found, mgrep will search that dir as well
+6. -p / --pretty Compatibility alias; colors are enabled by default.
+7. -c Prints matching line counts instead of normal matches
+8. -q Prints nothing, only returns match status
+9. -o Prints only matching text, one occurrence per line
+10. --files-from FILE Reads newline-delimited input file paths from FILE
+11. --files-from0 FILE / --null-files-from FILE Reads NUL-delimited input file paths from FILE
+12. -t / --theme THEME Select a named color theme: blue, red, green, purple, cyan, yellow, orange, pink, mono, bright.
+13. --no-color Disables ANSI color output.
+14. --colors COMPONENT:ATTR:VALUE Overrides colors. Example: --colors match:fg:magenta
+15. -n Adds an aditional newline between pattern finds. Default is 1 like grep
+16. -l Prints the line number of the file the pattern was found
+17. -s Prints the line of source cose that contained the pattern
+18. -a Searches ALL files. A handful are skipped by default:
    - no extension
    - .so
    - .a
@@ -117,7 +121,7 @@ that is skipped via the default search, so I will not be using -a, but I do want
 - source code
 - additional new lines
 ```bash
-./mgrep -rplns "pattern" dir
+./mgrep -rlns "pattern" dir
 ```
 ## Timing 
 This timing is not the most precise set of measurements known to mankind, so take them with a grain of salt.
