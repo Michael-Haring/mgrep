@@ -121,7 +121,11 @@ that is skipped via the default search, so I will not be using -a, but I do want
 - source code
 - additional new lines
 ```bash
-./mgrep -rlns "pattern" dir
+./mgrep -rslnc --colors file:fg:yellow --colors line:fg:3 --colors source:fg:244 --colors match:fg:55'
+```
+Or better, make an alias in your ~/.bashrc file
+```
+alias mg='mgrep -rslnc --colors file:fg:yellow --colors line:fg:3 --colors source:fg:244 --colors match:fg:55'
 ```
 ## Timing 
 This timing is not the most precise set of measurements known to mankind, so take them with a grain of salt.
