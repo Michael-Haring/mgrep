@@ -1,14 +1,15 @@
-# Rebuild instructions for noobies
-# from the project root run:
-# cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
 cmake_minimum_required(VERSION 3.10)
 
 project(mgrep LANGUAGES CXX)
+
+include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(MGREP_BUILD_TESTS "Build the Catch2 test executable" OFF)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -57,15 +58,21 @@ target_link_libraries(mgrep
     PRIVATE mgrep_library
 )
 
-add_executable(tests
-    testing/mgrep-cli-tests.cpp
-)
-add_dependencies(tests mgrep)
-
-target_include_directories( tests PRIVATE
-    ${CMAKE_SOURCE_DIR}/external
+install(TARGETS mgrep
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-target_link_libraries(tests
-    PRIVATE mgrep_library 
-)
+if(MGREP_BUILD_TESTS)
+    add_executable(tests
+        testing/mgrep-cli-tests.cpp
+    )
+    add_dependencies(tests mgrep)
+
+    target_include_directories(tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/external
+    )
+
+    target_link_libraries(tests
+        PRIVATE mgrep_library
+    )
+endif()

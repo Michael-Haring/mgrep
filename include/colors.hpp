@@ -31,6 +31,18 @@ inline constexpr const char* LINE_YELLOW = "\033[38;5;178m";
 inline constexpr const char* LINE_ORANGE = "\033[38;5;172m";
 inline constexpr const char* LINE_PINK = "\033[38;5;176m";
 inline constexpr const char* LINE_WHITE = "\033[38;5;250m";
+inline constexpr const char* FILE_GRUVBOX = "\033[38;5;214m";
+inline constexpr const char* LINE_GRUVBOX = "\033[38;5;108m";
+inline constexpr const char* MATCH_GRUVBOX = "\033[38;5;208m";
+inline constexpr const char* FILE_NORD = "\033[38;5;110m";
+inline constexpr const char* LINE_NORD = "\033[38;5;67m";
+inline constexpr const char* MATCH_NORD = "\033[38;5;153m";
+inline constexpr const char* FILE_DRACULA = "\033[38;5;117m";
+inline constexpr const char* LINE_DRACULA = "\033[38;5;141m";
+inline constexpr const char* MATCH_DRACULA = "\033[38;5;212m";
+inline constexpr const char* FILE_NEBULA = "\033[38;5;183m";
+inline constexpr const char* LINE_NEBULA = "\033[38;5;73m";
+inline constexpr const char* MATCH_NEBULA = "\033[38;5;159m";
 inline constexpr const char* RESET = "\033[0m";
 
 struct ColorTheme {

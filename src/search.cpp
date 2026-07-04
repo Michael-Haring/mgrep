@@ -596,7 +596,10 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
         const size_t pattern_len = pattern.size();
         const bool sparse_line_prefilter = before == 0 && after == 0 && !user_stats.invert_match;
         const bool hit_driven_line_scan =
-            sparse_line_prefilter && user_stats.max_lines == 0 && !user_stats.invert_match;
+            sparse_line_prefilter &&
+            user_stats.max_lines == 0 &&
+            !user_stats.invert_match &&
+            !user_stats.heading;
         unsigned int after_remaining = 0;
         size_t line_num = 0;
         size_t last_output_line_num = 0;
@@ -607,7 +610,45 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
             before == 0 &&
             after == 0;
         const bool context_print = before > 0 || after > 0;
+        const bool heading_mode =
+            user_stats.heading &&
+            !user_stats.count_print &&
+            !user_stats.only_matching &&
+            !user_stats.quiet;
         bool stop = false;
+        bool heading_printed = false;
+
+        auto ensure_heading = [&]() {
+            if (!heading_mode || heading_printed) {
+                return;
+            }
+            if (output.size() > output_start && output.back() != '\n') {
+                output.push_back('\n');
+            }
+            if (user_stats.cool_colors) {
+                append_colored_path(output, path, get_name_pos(), user_stats.colors);
+            } else {
+                append_plain_path(output, path, get_name_pos());
+            }
+            output.push_back('\n');
+            heading_printed = true;
+        };
+
+        auto append_line_prefix = [&](size_t match_line_num) {
+            if (!user_stats.line_number_print) {
+                return;
+            }
+            if (user_stats.cool_colors) {
+                output.append(user_stats.colors.line);
+                output.append(std::to_string(match_line_num));
+                output.append(":");
+                output.append(RESET);
+            } else {
+                output.append(std::to_string(match_line_num));
+                output.append(":");
+            }
+            output.push_back('\t');
+        };
 
         auto append_pending_line = [&](const char* data, size_t len) {
             if (len == 0) {
@@ -666,7 +707,8 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
             }
 
             const bool emits_source = user_stats.source_print || context_print;
-            if (user_stats.all_files &&
+            if (!heading_mode &&
+                user_stats.all_files &&
                 __builtin_expect(line_len >= OUTPUT_FLUSH_SIZE, 0) &&
                 try_emit_direct_match_source(
                     output,
@@ -685,7 +727,34 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
                 return;
             }
 
-            if (user_stats.cool_colors) {
+            if (heading_mode) {
+                ensure_heading();
+                if (emits_source) {
+                    append_line_prefix(match_line_num);
+                    if (user_stats.cool_colors) {
+                        append_highlighted_source(
+                            output,
+                            line_data,
+                            line_len,
+                            hit,
+                            pattern_len,
+                            user_stats.colors
+                        );
+                    } else {
+                        output.append(line_data, line_len);
+                    }
+                } else if (user_stats.line_number_print) {
+                    if (user_stats.cool_colors) {
+                        output.append(user_stats.colors.line);
+                        output.append(std::to_string(match_line_num));
+                        output.append(":");
+                        output.append(RESET);
+                    } else {
+                        output.append(std::to_string(match_line_num));
+                        output.append(":");
+                    }
+                }
+            } else if (user_stats.cool_colors) {
                 append_colored_path(output, path, get_name_pos(), user_stats.colors);
 
                 if (emits_source) {
@@ -740,6 +809,7 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
 
             if (selected) {
                 if (before > 0) {
+                    ensure_heading();
                     size_t context_line_num = line_num - prev_lines.size();
                     for (const auto& pline : prev_lines) {
                         if (context_line_num > last_output_line_num) {
@@ -759,6 +829,7 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
             }
             else if (after_remaining > 0) {
                 if (line_num > last_output_line_num) {
+                    ensure_heading();
                     output.append(line_data, line_len);
                     output.push_back('\n');
                     last_output_line_num = line_num;

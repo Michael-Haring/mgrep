@@ -2,7 +2,9 @@
 
 #include <cerrno>
 #include <climits>
+#include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <getopt.h>
 #include <iostream>
 #include <vector>
@@ -20,8 +22,116 @@ constexpr int VERBOSE_OPTION = 1008;
 constexpr int THEME_OPTION = 1009;
 constexpr int NO_COLOR_OPTION = 1010;
 constexpr int IGNORE_CASE_OPTION = 1011;
+constexpr int LITERAL_OPTION = 1012;
+constexpr int TYPE_OPTION = 1013;
+constexpr int EXT_OPTION = 1014;
+constexpr int GLOB_OPTION = 1015;
+constexpr int EXCLUDE_GLOB_OPTION = 1016;
+constexpr int HEADING_OPTION = 1017;
 
 using std::cout;
+
+bool short_option_takes_argument(char option)
+{
+    return option == 't' || option == 'B' || option == 'A' || option == 'm';
+}
+
+bool long_option_takes_argument(std::string_view option)
+{
+    return option == "--colors" ||
+        option == "--files-from" ||
+        option == "--files-from0" ||
+        option == "--null-files-from" ||
+        option == "--theme" ||
+        option == "--type" ||
+        option == "--ext" ||
+        option == "--glob" ||
+        option == "--exclude-glob";
+}
+
+bool append_file_list_operand(
+    std::string_view option,
+    const std::vector<std::string>& original_args,
+    size_t& index,
+    UserOptions& user_stats
+)
+{
+    const size_t equals_pos = option.find('=');
+    const std::string_view name = equals_pos == std::string_view::npos
+        ? option
+        : option.substr(0, equals_pos);
+
+    const bool is_files_from = name == "--files-from";
+    const bool is_files_from0 = name == "--files-from0" || name == "--null-files-from";
+    if (!is_files_from && !is_files_from0) {
+        return false;
+    }
+
+    std::string value;
+    if (equals_pos != std::string_view::npos) {
+        value.assign(option.substr(equals_pos + 1));
+    } else if (index + 1 < original_args.size()) {
+        ++index;
+        value = original_args[index];
+    }
+
+    user_stats.input_operands.push_back({
+        InputOperand::Kind::FileList,
+        std::move(value),
+        is_files_from0 ? '\0' : '\n'
+    });
+    return true;
+}
+
+void record_input_operands(const std::vector<std::string>& original_args, UserOptions& user_stats)
+{
+    bool pattern_seen = false;
+    bool options_ended = false;
+
+    for (size_t i = 0; i < original_args.size(); ++i) {
+        const std::string& arg = original_args[i];
+
+        if (!options_ended && arg == "--") {
+            options_ended = true;
+            continue;
+        }
+
+        if (!options_ended && arg.size() > 2 && arg.rfind("--", 0) == 0) {
+            if (append_file_list_operand(arg, original_args, i, user_stats)) {
+                continue;
+            }
+
+            const size_t equals_pos = arg.find('=');
+            const std::string_view name = equals_pos == std::string::npos
+                ? std::string_view(arg)
+                : std::string_view(arg.data(), equals_pos);
+            if (equals_pos == std::string::npos && long_option_takes_argument(name) &&
+                i + 1 < original_args.size()) {
+                ++i;
+            }
+            continue;
+        }
+
+        if (!options_ended && arg.size() > 1 && arg[0] == '-' && arg != "-") {
+            for (size_t pos = 1; pos < arg.size(); ++pos) {
+                if (short_option_takes_argument(arg[pos])) {
+                    if (pos + 1 == arg.size() && i + 1 < original_args.size()) {
+                        ++i;
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if (!pattern_seen) {
+            pattern_seen = true;
+            continue;
+        }
+
+        user_stats.input_operands.push_back({InputOperand::Kind::Path, arg, '\n'});
+    }
+}
 
 bool starts_with_digit(const char* value)
 {
@@ -79,6 +189,321 @@ std::string fold_ascii_string(const std::string& value)
     return folded;
 }
 
+char lower_ascii(char ch)
+{
+    return ch >= 'A' && ch <= 'Z'
+        ? static_cast<char>(ch + ('a' - 'A'))
+        : ch;
+}
+
+void add_allowed_extension(UserOptions& user_stats, std::string_view ext)
+{
+    if (ext.empty()) {
+        return;
+    }
+
+    std::string normalized;
+    normalized.reserve(ext.size() + (ext.front() == '.' ? 0 : 1));
+    if (ext.front() != '.') {
+        normalized.push_back('.');
+    }
+
+    for (char ch : ext) {
+        normalized.push_back(lower_ascii(ch));
+    }
+
+    user_stats.allowed_extensions.push_back(std::move(normalized));
+}
+
+bool parse_extension_list(std::string_view value, UserOptions& user_stats)
+{
+    while (!value.empty()) {
+        const size_t comma_pos = value.find(',');
+        const std::string_view ext = comma_pos == std::string_view::npos
+            ? value
+            : value.substr(0, comma_pos);
+
+        if (ext.empty()) {
+            return false;
+        }
+        add_allowed_extension(user_stats, ext);
+
+        if (comma_pos == std::string_view::npos) {
+            break;
+        }
+        if (comma_pos + 1 >= value.size()) {
+            return false;
+        }
+        value.remove_prefix(comma_pos + 1);
+    }
+
+    return true;
+}
+
+bool parse_file_type(std::string_view type, UserOptions& user_stats)
+{
+    if (type == "header" || type == "headers") {
+        add_allowed_extension(user_stats, "h");
+        add_allowed_extension(user_stats, "hh");
+        add_allowed_extension(user_stats, "hpp");
+        add_allowed_extension(user_stats, "hxx");
+        return true;
+    }
+    if (type == "source" || type == "sources") {
+        add_allowed_extension(user_stats, "c");
+        add_allowed_extension(user_stats, "cc");
+        add_allowed_extension(user_stats, "cpp");
+        add_allowed_extension(user_stats, "cxx");
+        return true;
+    }
+    if (type == "cpp" || type == "c++") {
+        add_allowed_extension(user_stats, "h");
+        add_allowed_extension(user_stats, "hh");
+        add_allowed_extension(user_stats, "hpp");
+        add_allowed_extension(user_stats, "hxx");
+        add_allowed_extension(user_stats, "c");
+        add_allowed_extension(user_stats, "cc");
+        add_allowed_extension(user_stats, "cpp");
+        add_allowed_extension(user_stats, "cxx");
+        return true;
+    }
+
+    return false;
+}
+
+bool extension_filter_allows(std::string_view path, const UserOptions& user_stats)
+{
+    if (user_stats.allowed_extensions.empty()) {
+        return true;
+    }
+
+    const size_t slash_pos = path.find_last_of('/');
+    if (slash_pos != std::string_view::npos) {
+        path.remove_prefix(slash_pos + 1);
+    }
+
+    const size_t dot_pos = path.find_last_of('.');
+    if (dot_pos == std::string_view::npos || dot_pos == 0) {
+        return false;
+    }
+
+    const std::string_view ext(path.data() + dot_pos, path.size() - dot_pos);
+    for (const auto& allowed : user_stats.allowed_extensions) {
+        if (ext.size() != allowed.size()) {
+            continue;
+        }
+
+        bool matches = true;
+        for (size_t i = 0; i < ext.size(); ++i) {
+            if (lower_ascii(ext[i]) != allowed[i]) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool glob_matches(std::string_view pattern, std::string_view path)
+{
+    const size_t rows = pattern.size() + 1;
+    const size_t cols = path.size() + 1;
+    std::vector<int8_t> memo(rows * cols, -1);
+
+    auto memo_at = [&](size_t pattern_pos, size_t path_pos) -> int8_t& {
+        return memo[(pattern_pos * cols) + path_pos];
+    };
+
+    std::function<bool(size_t, size_t)> match_at = [&](size_t pattern_pos, size_t path_pos) -> bool {
+        int8_t& cached = memo_at(pattern_pos, path_pos);
+        if (cached != -1) {
+            return cached == 1;
+        }
+
+        bool matched = false;
+        if (pattern_pos == pattern.size()) {
+            matched = path_pos == path.size();
+        } else if (pattern_pos + 2 < pattern.size() &&
+                   pattern[pattern_pos] == '*' &&
+                   pattern[pattern_pos + 1] == '*' &&
+                   pattern[pattern_pos + 2] == '/') {
+            matched = match_at(pattern_pos + 3, path_pos);
+            for (size_t next = path_pos; !matched && next < path.size(); ++next) {
+                if (path[next] == '/') {
+                    matched = match_at(pattern_pos + 3, next + 1);
+                }
+            }
+        } else if (pattern_pos + 1 < pattern.size() &&
+                   pattern[pattern_pos] == '*' &&
+                   pattern[pattern_pos + 1] == '*') {
+            for (size_t next = path_pos; !matched && next <= path.size(); ++next) {
+                matched = match_at(pattern_pos + 2, next);
+            }
+        } else if (pattern[pattern_pos] == '*') {
+            matched = match_at(pattern_pos + 1, path_pos);
+            for (size_t next = path_pos; !matched && next < path.size() && path[next] != '/'; ++next) {
+                matched = match_at(pattern_pos + 1, next + 1);
+            }
+        } else if (pattern[pattern_pos] == '?') {
+            matched = path_pos < path.size() &&
+                path[path_pos] != '/' &&
+                match_at(pattern_pos + 1, path_pos + 1);
+        } else {
+            matched = path_pos < path.size() &&
+                pattern[pattern_pos] == path[path_pos] &&
+                match_at(pattern_pos + 1, path_pos + 1);
+        }
+
+        cached = matched ? 1 : 0;
+        return matched;
+    };
+
+    return match_at(0, 0);
+}
+
+bool glob_matches_path(std::string_view pattern, std::string_view path)
+{
+    if (pattern.find('/') == std::string_view::npos) {
+        const size_t slash_pos = path.find_last_of('/');
+        if (slash_pos != std::string_view::npos) {
+            path.remove_prefix(slash_pos + 1);
+        }
+        return glob_matches(pattern, path);
+    }
+
+    if (glob_matches(pattern, path)) {
+        return true;
+    }
+
+    for (size_t pos = path.find('/'); pos != std::string_view::npos; pos = path.find('/', pos + 1)) {
+        if (pos + 1 < path.size() && glob_matches(pattern, path.substr(pos + 1))) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool path_filter_allows(std::string_view path, const UserOptions& user_stats)
+{
+    if (!extension_filter_allows(path, user_stats)) {
+        return false;
+    }
+
+    if (exclude_glob_matches_path(path, user_stats)) {
+        return false;
+    }
+
+    if (user_stats.include_globs.empty()) {
+        return true;
+    }
+
+    for (const auto& glob : user_stats.include_globs) {
+        if (glob_matches_path(glob, path)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool exclude_glob_matches_path(std::string_view path, const UserOptions& user_stats)
+{
+    for (const auto& glob : user_stats.exclude_globs) {
+        if (glob_matches_path(glob, path)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool exclude_glob_matches_directory(std::string_view path, const UserOptions& user_stats)
+{
+    if (user_stats.exclude_globs.empty()) {
+        return false;
+    }
+    if (exclude_glob_matches_path(path, user_stats)) {
+        return true;
+    }
+
+    std::string path_with_slash(path);
+    path_with_slash.push_back('/');
+    return exclude_glob_matches_path(path_with_slash, user_stats);
+}
+
+bool is_hex_digit(char ch)
+{
+    return (ch >= '0' && ch <= '9') ||
+        (ch >= 'a' && ch <= 'f') ||
+        (ch >= 'A' && ch <= 'F');
+}
+
+unsigned char hex_value(char ch)
+{
+    if (ch >= '0' && ch <= '9') {
+        return static_cast<unsigned char>(ch - '0');
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return static_cast<unsigned char>(ch - 'a' + 10);
+    }
+    return static_cast<unsigned char>(ch - 'A' + 10);
+}
+
+std::string decode_pattern_escapes(const std::string& pattern)
+{
+    std::string decoded;
+    decoded.reserve(pattern.size());
+
+    for (size_t i = 0; i < pattern.size(); ++i) {
+        const char ch = pattern[i];
+        if (ch != '\\' || i + 1 >= pattern.size()) {
+            decoded.push_back(ch);
+            continue;
+        }
+
+        const char escaped = pattern[++i];
+        switch (escaped) {
+            case 'n':
+                decoded.push_back('\n');
+                break;
+            case 'r':
+                decoded.push_back('\r');
+                break;
+            case 't':
+                decoded.push_back('\t');
+                break;
+            case '0':
+                decoded.push_back('\0');
+                break;
+            case '\\':
+                decoded.push_back('\\');
+                break;
+            case 'x':
+                if (i + 2 < pattern.size() &&
+                    is_hex_digit(pattern[i + 1]) &&
+                    is_hex_digit(pattern[i + 2])) {
+                    decoded.push_back(static_cast<char>(
+                        (hex_value(pattern[i + 1]) << 4) | hex_value(pattern[i + 2])
+                    ));
+                    i += 2;
+                } else {
+                    decoded.push_back('x');
+                }
+                break;
+            default:
+                decoded.push_back(escaped);
+                break;
+        }
+    }
+
+    return decoded;
+}
+
 void printHelp(char* file_name)
 {
     auto print_option = [](const char* option, const char* description) {
@@ -93,13 +518,20 @@ void printHelp(char* file_name)
     print_option("-r", "Recursively search all dirs below dir provided");
     print_option("-p, --pretty", "Compatibility alias; colors are enabled by default");
     print_option("-t, --theme THEME", "Select color theme: blue, red, green, purple,");
-    cout << "\t\tcyan, yellow, orange, pink, mono, bright\n";
+    cout << "\t\tcyan, yellow, orange, pink, mono, bright,\n";
+    cout << "\t\tgruvbox, nord, dracula, nebula\n";
     print_option("-c, --count", "Prints matching line counts instead of normal matches");
     print_option("-q, --quiet", "Prints nothing, only returns match status");
     print_option("-o, --only-matching", "Prints only matching text, one occurrence per line");
+    print_option("--type TYPE", "Only searches files in a named type: header, source, cpp");
+    print_option("--ext EXT[,EXT...]", "Only searches files with matching extensions");
+    print_option("--glob GLOB", "Only searches paths matching GLOB");
+    print_option("--exclude-glob GLOB", "Skips paths matching GLOB");
+    print_option("--heading", "Groups line/source output under each matching file path");
     print_option("--files-from FILE", "Reads newline-delimited input file paths from FILE");
     print_option("--files-from0 FILE, --null-files-from FILE", "Reads NUL-delimited input file paths from FILE");
     print_option("--no-color", "Disable ANSI color output");
+    print_option("--literal", "Treat backslashes in the pattern literally");
     print_option("--colors COMPONENT:ATTR:VALUE", "Override colors. Components: path, file, line, match, source");
     cout << "\t\tAttrs: fg, bg, style. Example: --colors match:fg:magenta\n";
     print_option("-n", "Prints an additional newline between pattern finds");
@@ -118,7 +550,14 @@ void printHelp(char* file_name)
 
 ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
 {
+    std::vector<std::string> original_args;
+    original_args.reserve(argc > 1 ? static_cast<size_t>(argc - 1) : 0);
+    for (int i = 1; i < argc; ++i) {
+        original_args.emplace_back(argv[i]);
+    }
+
     std::vector<std::string> color_overrides;
+    bool literal_pattern = false;
     int opt = 0;
     static option long_options[] = {
         {"colors", required_argument, nullptr, COLORS_OPTION},
@@ -133,6 +572,12 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
         {"only-matching", no_argument, nullptr, ONLY_MATCHING_OPTION},
         {"invert-match", no_argument, nullptr, INVERT_MATCH_OPTION},
         {"ignore-case", no_argument, nullptr, IGNORE_CASE_OPTION},
+        {"literal", no_argument, nullptr, LITERAL_OPTION},
+        {"type", required_argument, nullptr, TYPE_OPTION},
+        {"ext", required_argument, nullptr, EXT_OPTION},
+        {"glob", required_argument, nullptr, GLOB_OPTION},
+        {"exclude-glob", required_argument, nullptr, EXCLUDE_GLOB_OPTION},
+        {"heading", no_argument, nullptr, HEADING_OPTION},
         {"verbose", no_argument, nullptr, VERBOSE_OPTION},
         {nullptr, 0, nullptr, 0}
     };
@@ -240,6 +685,38 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
             case IGNORE_CASE_OPTION:
                 user_stats.ignore_case = true;
                 break;
+            case LITERAL_OPTION:
+                literal_pattern = true;
+                break;
+            case TYPE_OPTION:
+                if (!parse_file_type(optarg, user_stats)) {
+                    std::cerr << "ERROR: invalid type: " << optarg << "\n";
+                    return {false, MGREP_EXIT_ERROR, optind};
+                }
+                break;
+            case EXT_OPTION:
+                if (!parse_extension_list(optarg, user_stats)) {
+                    std::cerr << "ERROR: invalid extension list: " << optarg << "\n";
+                    return {false, MGREP_EXIT_ERROR, optind};
+                }
+                break;
+            case GLOB_OPTION:
+                if (optarg[0] == '\0') {
+                    std::cerr << "ERROR: invalid glob: " << optarg << "\n";
+                    return {false, MGREP_EXIT_ERROR, optind};
+                }
+                user_stats.include_globs.emplace_back(optarg);
+                break;
+            case EXCLUDE_GLOB_OPTION:
+                if (optarg[0] == '\0') {
+                    std::cerr << "ERROR: invalid exclude glob: " << optarg << "\n";
+                    return {false, MGREP_EXIT_ERROR, optind};
+                }
+                user_stats.exclude_globs.emplace_back(optarg);
+                break;
+            case HEADING_OPTION:
+                user_stats.heading = true;
+                break;
             case VERBOSE_OPTION:
                 user_stats.is_verbose = true;
                 break;
@@ -259,7 +736,9 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
         return {false, MGREP_EXIT_ERROR, optind};
     }
     if (argv[optind]) {
-        user_stats.pattern = argv[optind];
+        user_stats.pattern = literal_pattern
+            ? std::string(argv[optind])
+            : decode_pattern_escapes(argv[optind]);
         if (user_stats.ignore_case) {
             user_stats.folded_pattern = fold_ascii_string(user_stats.pattern);
         }
@@ -268,6 +747,8 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
         std::cerr << "ERROR: missing pattern\n";
         return {false, MGREP_EXIT_ERROR, optind};
     }
+
+    record_input_operands(original_args, user_stats);
 
     return {true, MGREP_EXIT_MATCH_FOUND, optind};
 }

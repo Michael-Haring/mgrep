@@ -248,6 +248,208 @@ TEST_CASE("All-files mode includes files skipped by default")
     REQUIRE(output.find(display_path(fixture.root / "binary.dat")) != std::string::npos);
 }
 
+TEST_CASE("Type option can restrict recursive search to headers")
+{
+    CliFixture fixture;
+    write_file(fixture.root / "include" / "defs.h", "needle header h\n");
+    write_file(fixture.root / "include" / "defs.hpp", "needle header hpp\n");
+    write_file(fixture.root / "src" / "impl.cpp", "needle source cpp\n");
+
+    const std::string output = run_mgrep({
+        "-rs",
+        "--type", "header",
+        "needle",
+        fixture.root.string()
+    });
+
+    REQUIRE(output.find("needle header h\n") != std::string::npos);
+    REQUIRE(output.find("needle header hpp\n") != std::string::npos);
+    REQUIRE(output.find("needle source cpp\n") == std::string::npos);
+    REQUIRE(output.find("needle nested\n") == std::string::npos);
+}
+
+TEST_CASE("Type option can restrict recursive search to source files")
+{
+    CliFixture fixture;
+    write_file(fixture.root / "include" / "defs.h", "needle header h\n");
+    write_file(fixture.root / "src" / "impl.cpp", "needle source cpp\n");
+
+    const std::string output = run_mgrep({
+        "-rs",
+        "--type", "source",
+        "needle",
+        fixture.root.string()
+    });
+
+    REQUIRE(output.find("needle source cpp\n") != std::string::npos);
+    REQUIRE(output.find("needle nested\n") != std::string::npos);
+    REQUIRE(output.find("needle header h\n") == std::string::npos);
+}
+
+TEST_CASE("Ext option restricts recursive search to listed extensions")
+{
+    CliFixture fixture;
+    write_file(fixture.root / "include" / "defs.h", "needle header h\n");
+    write_file(fixture.root / "include" / "defs.HPP", "needle uppercase hpp\n");
+    write_file(fixture.root / "src" / "impl.cpp", "needle source cpp\n");
+
+    const std::string output = run_mgrep({
+        "-rs",
+        "--ext", "h,hpp",
+        "needle",
+        fixture.root.string()
+    });
+
+    REQUIRE(output.find("needle header h\n") != std::string::npos);
+    REQUIRE(output.find("needle uppercase hpp\n") != std::string::npos);
+    REQUIRE(output.find("needle source cpp\n") == std::string::npos);
+}
+
+TEST_CASE("Ext option filters explicit file paths")
+{
+    CliFixture fixture;
+    const std::filesystem::path header = fixture.root / "defs.h";
+    const std::filesystem::path source = fixture.root / "impl.cpp";
+    write_file(header, "needle explicit header\n");
+    write_file(source, "needle explicit source\n");
+
+    const std::string output = run_mgrep({
+        "-s",
+        "--ext", "h",
+        "needle",
+        header.string(),
+        source.string()
+    });
+
+    REQUIRE(output.find("needle explicit header\n") != std::string::npos);
+    REQUIRE(output.find("needle explicit source\n") == std::string::npos);
+}
+
+TEST_CASE("Glob option filters recursive search by basename")
+{
+    CliFixture fixture;
+    write_file(fixture.root / "include" / "defs.h", "needle header h\n");
+    write_file(fixture.root / "include" / "defs.hpp", "needle header hpp\n");
+
+    const std::string output = run_mgrep({
+        "-rs",
+        "--glob", "*.h",
+        "needle",
+        fixture.root.string()
+    });
+
+    REQUIRE(output.find("needle header h\n") != std::string::npos);
+    REQUIRE(output.find("needle header hpp\n") == std::string::npos);
+    REQUIRE(output.find("needle nested\n") == std::string::npos);
+}
+
+TEST_CASE("Glob option can match path suffixes with directories")
+{
+    CliFixture fixture;
+    write_file(fixture.root / "include" / "defs.h", "needle include header\n");
+    write_file(fixture.root / "src" / "defs.h", "needle src header\n");
+
+    const std::string output = run_mgrep({
+        "-rs",
+        "--glob", "include/*.h",
+        "needle",
+        fixture.root.string()
+    });
+
+    REQUIRE(output.find("needle include header\n") != std::string::npos);
+    REQUIRE(output.find("needle src header\n") == std::string::npos);
+}
+
+TEST_CASE("Glob option supports recursive double-star directories")
+{
+    CliFixture fixture;
+    write_file(fixture.root / "include" / "defs.hpp", "needle shallow hpp\n");
+    write_file(fixture.root / "include" / "detail" / "defs.hpp", "needle nested hpp\n");
+    write_file(fixture.root / "src" / "defs.hpp", "needle src hpp\n");
+
+    const std::string output = run_mgrep({
+        "-rs",
+        "--glob", "include/**/*.hpp",
+        "needle",
+        fixture.root.string()
+    });
+
+    REQUIRE(output.find("needle shallow hpp\n") != std::string::npos);
+    REQUIRE(output.find("needle nested hpp\n") != std::string::npos);
+    REQUIRE(output.find("needle src hpp\n") == std::string::npos);
+}
+
+TEST_CASE("Exclude-glob removes matching paths")
+{
+    CliFixture fixture;
+    write_file(fixture.root / "src" / "defs.cpp", "needle production source\n");
+    write_file(fixture.root / "src" / "defs_test.cpp", "needle test source\n");
+
+    const std::string output = run_mgrep({
+        "-rs",
+        "--exclude-glob", "*test*",
+        "needle",
+        fixture.root.string()
+    });
+
+    REQUIRE(output.find("needle production source\n") != std::string::npos);
+    REQUIRE(output.find("needle test source\n") == std::string::npos);
+}
+
+TEST_CASE("Exclude-glob prunes matching directories")
+{
+    CliFixture fixture;
+    write_file(fixture.root / "src" / "defs.cpp", "needle production source\n");
+    write_file(fixture.root / "vendor" / "defs.cpp", "needle vendor source\n");
+
+    const std::string output = run_mgrep({
+        "-rs",
+        "--exclude-glob", "vendor",
+        "needle",
+        fixture.root.string()
+    });
+
+    REQUIRE(output.find("needle production source\n") != std::string::npos);
+    REQUIRE(output.find("needle vendor source\n") == std::string::npos);
+}
+
+TEST_CASE("Exclude-glob trailing slash prunes matching directories")
+{
+    CliFixture fixture;
+    write_file(fixture.root / "src" / "defs.cpp", "needle production source\n");
+    write_file(fixture.root / "vendor" / "defs.cpp", "needle vendor source\n");
+
+    const std::string output = run_mgrep({
+        "-rs",
+        "--exclude-glob", "vendor/",
+        "needle",
+        fixture.root.string()
+    });
+
+    REQUIRE(output.find("needle production source\n") != std::string::npos);
+    REQUIRE(output.find("needle vendor source\n") == std::string::npos);
+}
+
+TEST_CASE("Glob and ext filters compose")
+{
+    CliFixture fixture;
+    write_file(fixture.root / "include" / "defs.h", "needle include header\n");
+    write_file(fixture.root / "include" / "defs.cpp", "needle include source\n");
+    write_file(fixture.root / "src" / "defs.h", "needle src header\n");
+
+    const std::string output = run_mgrep({
+        "-rs",
+        "--glob", "include/*",
+        "--ext", "h",
+        "needle",
+        fixture.root.string()
+    });
+
+    REQUIRE(output.find("needle include header\n") != std::string::npos);
+    REQUIRE(output.find("needle include source\n") == std::string::npos);
+    REQUIRE(output.find("needle src header\n") == std::string::npos);
+}
+
 TEST_CASE("Fast file search skips binary-looking files with late NUL bytes")
 {
     CliFixture fixture;
@@ -475,6 +677,101 @@ TEST_CASE("Line and source mode separates matches with a blank line")
     const std::string output = run_mgrep({"-rlsn", "needle", fixture.root.string()});
 
     REQUIRE(output.find("2:\tneedle here\n\n") != std::string::npos);
+}
+
+TEST_CASE("Heading mode groups source matches by file")
+{
+    CliFixture fixture;
+
+    const std::string output = run_mgrep({
+        "-rs",
+        "--heading",
+        "needle",
+        (fixture.root / "src" / "one.txt").string()
+    });
+
+    const std::string expected =
+        display_path(fixture.root / "src" / "one.txt") + "\n"
+        "needle here\n"
+        "needle again\n";
+
+    REQUIRE(output == expected);
+}
+
+TEST_CASE("Heading mode prints line numbers under the file heading")
+{
+    CliFixture fixture;
+
+    const std::string output = run_mgrep({
+        "-rls",
+        "--heading",
+        "needle",
+        (fixture.root / "src" / "one.txt").string()
+    });
+
+    const std::string expected =
+        display_path(fixture.root / "src" / "one.txt") + "\n"
+        "2:\tneedle here\n"
+        "4:\tneedle again\n";
+
+    REQUIRE(output == expected);
+}
+
+TEST_CASE("Heading mode groups context output under the file heading")
+{
+    CliFixture fixture;
+
+    const std::string output = run_mgrep({
+        "-s",
+        "--heading",
+        "-B", "1",
+        "-A", "1",
+        "needle here",
+        (fixture.root / "src" / "one.txt").string()
+    });
+
+    const std::string expected =
+        display_path(fixture.root / "src" / "one.txt") + "\n"
+        "alpha\n"
+        "needle here\n"
+        "omega\n";
+
+    REQUIRE(output == expected);
+}
+
+TEST_CASE("Heading mode does not change path-only output")
+{
+    CliFixture fixture;
+
+    const std::string output = run_mgrep({
+        "--heading",
+        "needle here",
+        (fixture.root / "src" / "one.txt").string()
+    });
+
+    REQUIRE(output == display_path(fixture.root / "src" / "one.txt") + "\n");
+}
+
+TEST_CASE("Heading mode groups huge source matches by file")
+{
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "huge-heading.txt";
+    const std::string first_line = std::string(1024 * 1024, 'a') + " needle one\n";
+    const std::string second_line = std::string(1024 * 1024, 'b') + " needle two\n";
+    write_file(path, first_line + second_line);
+
+    const std::string output = run_mgrep({
+        "-as",
+        "--heading",
+        "needle",
+        path.string()
+    });
+
+    const std::string shown_path = display_path(path);
+    REQUIRE(output.rfind(shown_path + "\n", 0) == 0);
+    REQUIRE(output.find(shown_path, shown_path.size() + 1) == std::string::npos);
+    REQUIRE(output.find(" needle one\n") != std::string::npos);
+    REQUIRE(output.find(" needle two\n") != std::string::npos);
 }
 
 TEST_CASE("Ignore-case search matches ASCII case variants in files")
@@ -1081,6 +1378,34 @@ TEST_CASE("Files-from output stays before later directory traversal output")
     REQUIRE(listed_pos < dir_pos);
 }
 
+TEST_CASE("Explicit path output stays before later files-from output")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path explicit_path = fixture.root / "explicit-before-list.txt";
+    const std::filesystem::path listed_path = fixture.root / "listed-after-explicit.txt";
+    const std::filesystem::path list_path = fixture.root / "later-files-list.txt";
+
+    write_file(explicit_path, "needle explicit first\n");
+    write_file(listed_path, "needle listed second\n");
+    write_file(list_path, listed_path.string() + "\n");
+
+    const std::string output = run_mgrep({
+        "-s",
+        "needle",
+        explicit_path.string(),
+        "--files-from", list_path.string()
+    }, &exit_code);
+
+    const size_t explicit_pos = output.find("needle explicit first\n");
+    const size_t listed_pos = output.find("needle listed second\n");
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(explicit_pos != std::string::npos);
+    REQUIRE(listed_pos != std::string::npos);
+    REQUIRE(explicit_pos < listed_pos);
+}
+
 TEST_CASE("Mixed files-from operands preserve option order")
 {
     CliFixture fixture;
@@ -1228,6 +1553,26 @@ TEST_CASE("Quiet mode stops before later files-from operand after a list match")
         "--files-from", first_list.string(),
         "--files-from", second_list.string(),
         "needle"
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Quiet mode stops before later files-from operand after an explicit path match")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path list_path = fixture.root / "quiet-later-files-list.txt";
+    const std::filesystem::path missing_path = fixture.root / "missing-in-later-list.txt";
+
+    write_file(list_path, missing_path.string() + "\n");
+
+    const std::string output = run_mgrep({
+        "-q",
+        "needle",
+        (fixture.root / "top.txt").string(),
+        "--files-from", list_path.string()
     }, &exit_code);
 
     REQUIRE(exit_code == 0);
@@ -1697,6 +2042,39 @@ TEST_CASE("Purple color preset is supported")
     REQUIRE(output.find("\033[38;5;98m2:\033[0m\t\033[38;5;177mneedle here\033[0m") != std::string::npos);
 }
 
+TEST_CASE("Named editor-style color presets are supported")
+{
+    CliFixture fixture;
+
+    struct ThemeExpectation {
+        const char* name;
+        const char* file_color;
+        const char* line_color;
+        const char* match_color;
+    };
+
+    const ThemeExpectation themes[] = {
+        {"gruvbox", "\033[38;5;214m", "\033[38;5;108m", "\033[38;5;208m"},
+        {"nord", "\033[38;5;110m", "\033[38;5;67m", "\033[38;5;153m"},
+        {"dracula", "\033[38;5;117m", "\033[38;5;141m", "\033[38;5;212m"},
+        {"nebula", "\033[38;5;183m", "\033[38;5;73m", "\033[38;5;159m"},
+    };
+
+    for (const ThemeExpectation& theme : themes) {
+        const std::string output = run_mgrep({
+            "-rls",
+            "--theme",
+            theme.name,
+            "needle here",
+            fixture.root.string()
+        });
+
+        REQUIRE(output.find(std::string(theme.file_color) + "one.txt\033[0m") != std::string::npos);
+        REQUIRE(output.find(std::string(theme.line_color) + "2:\033[0m\t" +
+            theme.match_color + "needle here\033[0m") != std::string::npos);
+    }
+}
+
 TEST_CASE("Pretty option remains a color-on compatibility alias")
 {
     CliFixture fixture;
@@ -1881,6 +2259,38 @@ TEST_CASE("Invalid numeric options are rejected")
     );
     REQUIRE(exit_code == 2);
     REQUIRE(output.find("ERROR: invalid max-lines value: +1") != std::string::npos);
+
+    output = run_mgrep_with_stdin(
+        "needle\n",
+        {"--type", "unknown", "needle"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: invalid type: unknown") != std::string::npos);
+
+    output = run_mgrep_with_stdin(
+        "needle\n",
+        {"--ext", "h,", "needle"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: invalid extension list: h,") != std::string::npos);
+
+    output = run_mgrep_with_stdin(
+        "needle\n",
+        {"--glob", "", "needle"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: invalid glob: ") != std::string::npos);
+
+    output = run_mgrep_with_stdin(
+        "needle\n",
+        {"--exclude-glob", "", "needle"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: invalid exclude glob: ") != std::string::npos);
 }
 
 TEST_CASE("Non-recursive directory search does not descend into child directories")
@@ -1985,6 +2395,97 @@ TEST_CASE("Patterns are treated as fixed strings, not regular expressions")
 
     REQUIRE(output.find(display_path(fixture.root / "src" / "regex_chars.txt")) != std::string::npos);
     REQUIRE(output.find("1:\tliteral int main( should match") != std::string::npos);
+}
+
+TEST_CASE("Pattern backslash escapes are decoded by default")
+{
+    int exit_code = -1;
+
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nbeta\n",
+        {"-q", "alpha\\nbeta"},
+        &exit_code
+    );
+
+    REQUIRE(output.empty());
+    REQUIRE(exit_code == 0);
+}
+
+TEST_CASE("Escaped punctuation remains fixed-string matching")
+{
+    int exit_code = -1;
+
+    const std::string output = run_mgrep_with_stdin(
+        "literal int main( should match\n",
+        {"-q", "int main\\("},
+        &exit_code
+    );
+
+    REQUIRE(output.empty());
+    REQUIRE(exit_code == 0);
+}
+
+TEST_CASE("Double backslash searches for a literal backslash")
+{
+    int exit_code = -1;
+
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\\nbeta\n",
+        {"-q", "alpha\\\\nbeta"},
+        &exit_code
+    );
+
+    REQUIRE(output.empty());
+    REQUIRE(exit_code == 0);
+}
+
+TEST_CASE("Literal option disables pattern escape decoding")
+{
+    int exit_code = -1;
+
+    std::string output = run_mgrep_with_stdin(
+        "alpha\nbeta\n",
+        {"--literal", "-q", "alpha\\nbeta"},
+        &exit_code
+    );
+    REQUIRE(output.empty());
+    REQUIRE(exit_code == 1);
+
+    output = run_mgrep_with_stdin(
+        "alpha\\nbeta\n",
+        {"--literal", "-q", "alpha\\nbeta"},
+        &exit_code
+    );
+    REQUIRE(output.empty());
+    REQUIRE(exit_code == 0);
+}
+
+TEST_CASE("Hex pattern escapes are decoded by default")
+{
+    int exit_code = -1;
+
+    const std::string output = run_mgrep_with_stdin(
+        "hex: A\n",
+        {"-q", "hex: \\x41"},
+        &exit_code
+    );
+
+    REQUIRE(output.empty());
+    REQUIRE(exit_code == 0);
+}
+
+TEST_CASE("NUL pattern escape is decoded by default")
+{
+    int exit_code = -1;
+
+    const std::string output = run_mgrep_with_stdin(
+        std::string("alpha\0beta\n", 11),
+        {"-qa", "alpha\\0beta"},
+        &exit_code
+    );
+
+    REQUIRE(output.empty());
+    REQUIRE(exit_code == 0);
 }
 
 TEST_CASE("Files without a trailing newline still report source matches")

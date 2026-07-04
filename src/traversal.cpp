@@ -264,7 +264,9 @@ void collect_search_files(
     }
 
     if (S_ISREG(st.st_mode)) {
-        add_search_path(work, root);
+        if (path_filter_allows(root, work.user_stats)) {
+            add_search_path(work, root);
+        }
         return;
     }
 
@@ -340,6 +342,10 @@ void collect_search_files_recursive(
             }
             root.append(name);
 
+            if (!path_filter_allows(root, work.user_stats)) {
+                continue;
+            }
+
             add_search_path(work, root);
         }
         else if (work.user_stats.recursive_mode && type == DT_DIR) {
@@ -353,6 +359,10 @@ void collect_search_files_recursive(
                 root.push_back('/');
             }
             root.append(name);
+
+            if (exclude_glob_matches_directory(root, work.user_stats)) {
+                continue;
+            }
 
             collect_search_files_recursive(root, work);
         }
@@ -427,6 +437,10 @@ void collect_search_files_one_dir(
             }
             root.append(name);
 
+            if (!path_filter_allows(root, traversal.search.user_stats)) {
+                continue;
+            }
+
             found_files.push_back(root);
         }
         else if (type == DT_DIR) {
@@ -441,6 +455,10 @@ void collect_search_files_one_dir(
                 root.push_back('/');
             }
             root.append(name);
+
+            if (exclude_glob_matches_directory(root, traversal.search.user_stats)) {
+                continue;
+            }
 
             child_dirs.push_back(root);
         }

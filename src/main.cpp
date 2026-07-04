@@ -54,6 +54,10 @@ bool add_explicit_file(const std::string& path, SearchWork& work)
         return false;
     }
 
+    if (!path_filter_allows(path, work.user_stats)) {
+        return true;
+    }
+
     work.small_paths.push_back(path);
     return true;
 }
@@ -118,11 +122,15 @@ int main(int argc, char* argv[])
         return parse_result.exit_code;
     }
 
-    int first_path_arg = parse_result.first_path_arg;
-
     const bool has_file_list_input =
         !user_stats.file_lists.empty();
-    const bool has_path_args = first_path_arg < argc;
+    bool has_path_args = false;
+    for (const auto& operand : user_stats.input_operands) {
+        if (operand.kind == InputOperand::Kind::Path) {
+            has_path_args = true;
+            break;
+        }
+    }
     if (!has_file_list_input && !has_path_args && !::isatty(STDIN_FILENO)) {
         search_stdin(user_stats);
 
@@ -140,7 +148,6 @@ int main(int argc, char* argv[])
     SearchWork work(user_stats);
     work.read_file = choose_read_file(user_stats);
     bool had_error = false;
-    bool ordered_files_pending = false;
     size_t completed_batches = 0;
 
     auto finish_pending_work = [&]() {
@@ -150,7 +157,6 @@ int main(int argc, char* argv[])
         work.tp.reset();
         work.stop_requested.store(false, std::memory_order_relaxed);
         work.read_file = choose_read_file(user_stats);
-        ordered_files_pending = false;
     };
 
     auto has_pending_work = [&]() {
@@ -165,24 +171,7 @@ int main(int argc, char* argv[])
         return matches > 0;
     };
 
-    for (const auto& file_list : user_stats.file_lists) {
-        if (user_stats.quiet && matches > 0) {
-            break;
-        }
-
-        if (!process_file_list(
-                file_list.first,
-                file_list.second,
-                work,
-                stop_quiet_after_file_list_add)) {
-            had_error = true;
-        }
-        if (has_pending_work()) {
-            ordered_files_pending = true;
-        }
-    }
-
-    for (int i = first_path_arg; i < argc; ++i) {
+    for (const auto& operand : user_stats.input_operands) {
         if (user_stats.quiet && matches > 0) {
             break;
         }
@@ -194,7 +183,18 @@ int main(int argc, char* argv[])
             }
         }
 
-        if (std::strcmp(argv[i], "-") == 0) {
+        if (operand.kind == InputOperand::Kind::FileList) {
+            if (!process_file_list(
+                    operand.value,
+                    operand.delimiter,
+                    work,
+                    stop_quiet_after_file_list_add)) {
+                had_error = true;
+            }
+            continue;
+        }
+
+        if (operand.value == "-") {
             finish_pending_work();
             if (user_stats.quiet && matches > 0) {
                 break;
@@ -206,7 +206,7 @@ int main(int argc, char* argv[])
             continue;
         }
 
-        std::filesystem::path root = argv[i];
+        std::filesystem::path root = operand.value;
 
         if (check_user_root(root)) {
             std::error_code ec;
@@ -214,8 +214,9 @@ int main(int argc, char* argv[])
                 if (work.tp) {
                     finish_pending_work();
                 }
-                work.small_paths.push_back(root.string());
-                ordered_files_pending = true;
+                if (path_filter_allows(root.string(), user_stats)) {
+                    work.small_paths.push_back(root.string());
+                }
             } else {
                 if (has_pending_work()) {
                     finish_pending_work();

@@ -5,6 +5,7 @@ scripts/
 .cache/
 compile_commands.json
 Makefile
+!/Makefile
 *.obj
 *.exe.dll
 *.so
@@ -20,3 +21,4 @@ Thumbs.db
 *.md
 !README.md
 skills/
+perf_results.txt

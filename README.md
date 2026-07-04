@@ -5,20 +5,6 @@
 ## Overview
 At this current point, mgrep is tied or faster than ripgrep for searching various paths in my own laptop, while searching more files. Obviously, it is not as robust or full of various features that mgrep currently lacks. This is part of the advantage of being a 10 year old open source software. Do not confuse my pride and interest in this project as an assertion that mgrep is a superior tool overall.
 
-## Agentic AI
-I have had several experiences now where employers express desire for their employees to have experience working with agentic AI models. In an attempt to familiarize myself with this new technology and try to evolve with the times I used agentic AI on this program. I have a 20$/month OpenAI subscription which gives me access to OpenAI's Codex model. If you are unfamiliar with this tool, it is essentially a ChatGPT that lives in your terminal, that is more tuned towards programming, rather than delivering pages and pages of text.
-
-I did not start the project with this tool, and this is my first time using anything like this, so beginning a new project from scratch with the help of AI might bring along with it several unique challenges I did not have to overcome. By the time I was using Codex on this problem, I already have a well functioning relatively fast mgrep, with a couple of required options.
-
-When I had decided to use Codex, I began researching how to use these models effectively. I learned about a harness, and these *.md files you can use to keep certain ideas at the forefront of the models "thinking", or essentially use the .md files as scripts that the agent can look and and begin executing. You can give it various rules in the agents equivelent to a AGENTS.md, either locally or at your /$HOME. With all of these features at your disposal, you can really narrow the models focus, and get results that were, at least my pea sized brain, absolutely mind blowing.
-
-### Agentic AI Subjective
-A good arument you often here is a steel-manned version of the AI is bad, trained on bad code, unreliable results or hallucinations. Even, changing code that was irrelevent to what you asked. Any horror story you could imagine. I was extremely hesitent to even activate the model as I did not trust it to not just begin removing files off of my computer and other such nonsense. I did not even want to use codex on my original project incase it completely destroyed it. I copied the entire project to basically give codex a playground. When I first started Codex in this projects root, I already had a bash script that ran mgrep against other greps several times and collected benchmarks. I already had a Catch2 test suite.
-
-I asked codex, to look inside the src/ dir and list what the top 5 most effective optimizations we could make were. After telling the agent about all of the tools it had at its disposal, it began working to implement those optimizations. testing the effects of the changes, and adding test cases to the script as it went. Adjusting old tests that failed because of new ways of doing things. It was not magic, it was just able to try all of these various ways of doing things very quickly, and improve on iterations based on parameters I gave, namely functionality and speed.
-
-I am not an expert and this is not an article centered around philosophy, so I will not drag on here but the point is, Codex is an extremely powerful tool. Times are changing, and the current version of Codex is very likely the worst version you will ever use again.
-
 ## Quick Start
 ### Dependencies
 - CMake
@@ -31,28 +17,23 @@ cd mgrep
 ```
 From the project root:
 ```bash
-cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
-cd build-release
 make
 ```
 then to test your build:
 ```bash
-./test
+make test
 ```
 Finally you can run the almighty mgrep...
 ```bash
-./mgrep
+./build-release/mgrep
 ```
 
 If that works and you want it to be callable, the same as grep, ripgrep, time, ls or any of these various commands at your disposal:
-Put the mgrep executable in your /usr/local/bin. cp the executable into that dir. Assuming you are in the executables directory you could do:
+Install the executable from the project root:
 ```
-sudo cp ./mgrep /usr/local/bin/mgrep
+sudo make install
 ```
-then type your password to gain permission to do this. After this, you should be able to call mgrep like any other linux command. Alias' can then be made in your ~/.bashrc file so a simple "mg" expands to something like mgrep -rclsn or whatever colors you want.
-
-### Catch2 Test Suite
-At this point, there are over 750 tests in the test suite. Don't look at me, it was the agent. The exact code touched % that the suite achieves is unknown at this point, but I will rectify that soon. The point is that the test suite is massive, and relatively speaking compared to my 12 test suite I had written, then stopped adding to because I am a nooby peasant. The agent has been adding all of these tests, to ensure lack of functional regression as new features or optimizations are implemented.
+then type your password to gain permission to install into the default prefix, usually `/usr/local/bin`. After this, you should be able to call mgrep like any other linux command. Alias' can then be made in your ~/.bashrc file so a simple "mg" expands to something like mgrep -rclsn or whatever colors you want.
 
 ## Features
 ### ThreadPool Creation
@@ -87,15 +68,21 @@ The legendary getopt provides us with several options in this program
 7. -c Prints matching line counts instead of normal matches
 8. -q Prints nothing, only returns match status
 9. -o Prints only matching text, one occurrence per line
-10. --files-from FILE Reads newline-delimited input file paths from FILE
-11. --files-from0 FILE / --null-files-from FILE Reads NUL-delimited input file paths from FILE
-12. -t / --theme THEME Select a named color theme: blue, red, green, purple, cyan, yellow, orange, pink, mono, bright.
-13. --no-color Disables ANSI color output.
-14. --colors COMPONENT:ATTR:VALUE Overrides colors. Example: --colors match:fg:magenta
-15. -n Adds an aditional newline between pattern finds. Default is 1 like grep
-16. -l Prints the line number of the file the pattern was found
-17. -s Prints the line of source cose that contained the pattern
-18. -a Searches ALL files. A handful are skipped by default:
+10. --type TYPE Only searches files in a named type: header, source, cpp.
+11. --ext EXT[,EXT...] Only searches files with matching extensions. Example: --ext h,hpp
+12. --glob GLOB Only searches paths matching GLOB. Example: --glob 'include/**/*.hpp'
+13. --exclude-glob GLOB Skips paths matching GLOB. Example: --exclude-glob '*test*'
+14. --heading Groups line/source output under each matching file path.
+15. --files-from FILE Reads newline-delimited input file paths from FILE
+16. --files-from0 FILE / --null-files-from FILE Reads NUL-delimited input file paths from FILE
+17. -t / --theme THEME Select a named color theme: blue, red, green, purple, cyan, yellow, orange, pink, mono, bright, gruvbox, nord, dracula, nebula.
+18. --no-color Disables ANSI color output.
+19. --literal Treats backslashes in the pattern literally. By default, pattern escapes like \n, \r, \t, \0, \\, and \xNN are decoded before searching.
+20. --colors COMPONENT:ATTR:VALUE Overrides colors. Example: --colors match:fg:magenta
+21. -n Adds an aditional newline between pattern finds. Default is 1 like grep
+22. -l Prints the line number of the file the pattern was found
+23. -s Prints the line of source cose that contained the pattern
+24. -a Searches ALL files. A handful are skipped by default:
    - no extension
    - .so
    - .a

@@ -42,6 +42,22 @@ bool parse_color_theme(std::string_view name, ColorTheme& colors)
         colors = {LINE_WHITE, FILE_CYAN, FILE_YELLOW, MATCH_PINK, ""};
         return true;
     }
+    if (name == "gruvbox") {
+        colors = {PATH_GREY, FILE_GRUVBOX, LINE_GRUVBOX, MATCH_GRUVBOX, ""};
+        return true;
+    }
+    if (name == "nord") {
+        colors = {PATH_GREY, FILE_NORD, LINE_NORD, MATCH_NORD, ""};
+        return true;
+    }
+    if (name == "dracula") {
+        colors = {PATH_GREY, FILE_DRACULA, LINE_DRACULA, MATCH_DRACULA, ""};
+        return true;
+    }
+    if (name == "nebula") {
+        colors = {PATH_GREY, FILE_NEBULA, LINE_NEBULA, MATCH_NEBULA, ""};
+        return true;
+    }
 
     return false;
 }
