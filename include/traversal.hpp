@@ -28,6 +28,8 @@ struct SearchWork {
     std::unique_ptr<ThreadPool> tp;
     ReadFileFn read_file = nullptr;
     std::atomic<bool> stop_requested{false};
+    std::mutex list_mtx;
+    std::string list_output;
 };
 
 struct DirectoryTraversalWork {

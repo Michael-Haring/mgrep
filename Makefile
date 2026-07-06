@@ -14,6 +14,12 @@ COLOR_BUILD_OUTPUT = sed -u -E \
 	-e 's/^(Build .*)$$/$(BUILD_COLOR)\1$(RESET_COLOR)/' \
 	-e 's/^(\[100%\])( Built target .*)$$/$(BUILD_COLOR)\1$(RESET_COLOR)$(TARGET_COLOR)\2$(RESET_COLOR)/' \
 	-e 's/^(\[[ 0-9]+%\].*)$$/$(BUILD_COLOR)\1$(RESET_COLOR)/'
+COLOR_MAKE_OUTPUT = sed -u -E 's/\x1b\[[0-9;]*m//g' | sed -u -E \
+	-e 's/^(g?make\[[0-9]+\]: .*)$$/$(MAKE_COLOR)\1$(RESET_COLOR)/' \
+	-e 's/^(-- .*)$$/$(CXX_COLOR)\1$(RESET_COLOR)/' \
+	-e 's/^(Build .*)$$/$(BUILD_COLOR)\1$(RESET_COLOR)/' \
+	-e 's/^(\[100%\])( Built target .*)$$/$(BUILD_COLOR)\1$(RESET_COLOR)$(TARGET_COLOR)\2$(RESET_COLOR)/' \
+	-e 's/^(\[[ 0-9]+%\].*)$$/$(BUILD_COLOR)\1$(RESET_COLOR)/'
 
 ifdef DESTDIR
 INSTALL_COMMAND = DESTDIR="$(DESTDIR)" $(CMAKE) --install $(BUILD_DIR)
@@ -34,7 +40,7 @@ configure-tests:
 	@set -o pipefail; $(CMAKE) -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DMGREP_BUILD_TESTS=ON 2>&1 | $(COLOR_BUILD_OUTPUT)
 
 build: configure
-	@set -o pipefail; $(CMAKE) --build $(BUILD_DIR) 2>&1 | $(COLOR_BUILD_OUTPUT)
+	@set -o pipefail; $(CMAKE) --build $(BUILD_DIR) 2>&1 | $(COLOR_MAKE_OUTPUT)
 
 test: configure-tests
 	@set -o pipefail; $(CMAKE) --build $(BUILD_DIR) 2>&1 | $(COLOR_BUILD_OUTPUT)

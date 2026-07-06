@@ -20,5 +20,7 @@ Thumbs.db
 
 *.md
 !README.md
+!features.md
+!development.md
 skills/
 perf_results.txt

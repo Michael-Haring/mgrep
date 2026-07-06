@@ -48,6 +48,7 @@ struct UserOptions {
     bool invert_match = false;
     bool ignore_case = false;
     bool heading = false;
+    bool list_files = false;
     unsigned int print_before_source = 0;
     unsigned int print_after_source = 0;
     unsigned int max_lines = 0;

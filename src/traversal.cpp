@@ -84,6 +84,39 @@ void direct_output_threaded(
     write_direct_stdout(output, pieces, piece_count);
 }
 
+void append_list_file(SearchWork& work, const std::string& path)
+{
+    if (work.user_stats.quiet) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(work.list_mtx);
+    if (work.user_stats.cool_colors) {
+        work.list_output += work.user_stats.colors.path;
+        work.list_output += path;
+        work.list_output += RESET;
+    } else {
+        work.list_output += path;
+    }
+    work.list_output.push_back('\n');
+
+    if (work.list_output.size() >= OUTPUT_FLUSH_SIZE) {
+        cout << work.list_output;
+        work.list_output.clear();
+    }
+}
+
+void flush_list_files(SearchWork& work)
+{
+    if (work.list_output.empty()) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(work.list_mtx);
+    cout << work.list_output;
+    work.list_output.clear();
+}
+
 } // namespace
 
 void flush_output(ThreadPool& tp, std::string& output, size_t& local_matches)
@@ -143,6 +176,11 @@ void push_file_batch(
 
 void add_search_path(SearchWork& work, const std::string& path)
 {
+    if (work.user_stats.list_files) {
+        append_list_file(work, path);
+        return;
+    }
+
     if (work.user_stats.quiet && work.stop_requested.load(std::memory_order_relaxed)) {
         return;
     }
@@ -184,6 +222,14 @@ void add_search_path(SearchWork& work, const std::string& path)
 
 void add_search_paths(SearchWork& work, std::vector<std::string>& paths)
 {
+    if (work.user_stats.list_files) {
+        for (const auto& path : paths) {
+            append_list_file(work, path);
+        }
+        paths.clear();
+        return;
+    }
+
     if (paths.empty() ||
         (work.user_stats.quiet && work.stop_requested.load(std::memory_order_relaxed))) {
         return;
@@ -243,6 +289,11 @@ void add_search_paths(SearchWork& work, std::vector<std::string>& paths)
 
 size_t finish_search(SearchWork& work)
 {
+    if (work.user_stats.list_files) {
+        flush_list_files(work);
+        return 0;
+    }
+
     if (!work.tp) {
         return search_files_single_thread(work.small_paths, work.user_stats, work.read_file);
     }

@@ -58,7 +58,11 @@ bool add_explicit_file(const std::string& path, SearchWork& work)
         return true;
     }
 
-    work.small_paths.push_back(path);
+    if (work.user_stats.list_files) {
+        add_search_path(work, path);
+    } else {
+        work.small_paths.push_back(path);
+    }
     return true;
 }
 
@@ -164,7 +168,7 @@ int main(int argc, char* argv[])
     };
 
     auto stop_quiet_after_file_list_add = [&]() {
-        if (!user_stats.quiet) {
+        if (!user_stats.quiet || user_stats.list_files) {
             return false;
         }
         finish_pending_work();
@@ -215,7 +219,11 @@ int main(int argc, char* argv[])
                     finish_pending_work();
                 }
                 if (path_filter_allows(root.string(), user_stats)) {
-                    work.small_paths.push_back(root.string());
+                    if (user_stats.list_files) {
+                        add_search_path(work, root.string());
+                    } else {
+                        work.small_paths.push_back(root.string());
+                    }
                 }
             } else {
                 if (has_pending_work()) {
@@ -236,6 +244,10 @@ int main(int argc, char* argv[])
 
     if (had_error && !(user_stats.quiet && matches > 0)) {
         return MGREP_EXIT_ERROR;
+    }
+
+    if (user_stats.list_files) {
+        return MGREP_EXIT_MATCH_FOUND;
     }
 
     return exit_code_from_matches();

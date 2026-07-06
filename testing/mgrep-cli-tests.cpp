@@ -248,6 +248,68 @@ TEST_CASE("All-files mode includes files skipped by default")
     REQUIRE(output.find(display_path(fixture.root / "binary.dat")) != std::string::npos);
 }
 
+TEST_CASE("Files option lists searchable files without a pattern")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+
+    const std::string output = run_mgrep({
+        "--files",
+        fixture.root.string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find((fixture.root / "top.txt").string() + "\n") != std::string::npos);
+    REQUIRE(output.find((fixture.root / "src" / "one.txt").string() + "\n") != std::string::npos);
+    REQUIRE(output.find((fixture.root / "src" / "nested" / "three.cpp").string() + "\n") != std::string::npos);
+    REQUIRE(output.find((fixture.root / "skip.bin").string()) == std::string::npos);
+    REQUIRE(output.find((fixture.root / "no_extension").string()) == std::string::npos);
+    REQUIRE(output.find((fixture.root / ".git" / "hidden.txt").string()) == std::string::npos);
+    REQUIRE(output.find((fixture.root / "build" / "generated.txt").string()) == std::string::npos);
+    REQUIRE(output.find("needle here") == std::string::npos);
+}
+
+TEST_CASE("Files option composes with path filters and all-files mode")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+
+    std::string output = run_mgrep({
+        "--files",
+        "--ext", "cpp",
+        fixture.root.string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find((fixture.root / "src" / "nested" / "three.cpp").string() + "\n") != std::string::npos);
+    REQUIRE(output.find((fixture.root / "src" / "one.txt").string()) == std::string::npos);
+
+    output = run_mgrep({
+        "--files",
+        "-a",
+        "--glob", "*.bin",
+        fixture.root.string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find((fixture.root / "skip.bin").string() + "\n") != std::string::npos);
+    REQUIRE(output.find((fixture.root / "binary.dat").string()) == std::string::npos);
+}
+
+TEST_CASE("Files option defaults to current directory")
+{
+    int exit_code = -1;
+
+    const std::string output = run_mgrep({
+        "--files",
+        "-a",
+        "--glob", "mgrep"
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find("./mgrep\n") != std::string::npos);
+}
+
 TEST_CASE("Type option can restrict recursive search to headers")
 {
     CliFixture fixture;

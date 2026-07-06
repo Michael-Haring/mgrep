@@ -28,6 +28,7 @@ constexpr int EXT_OPTION = 1014;
 constexpr int GLOB_OPTION = 1015;
 constexpr int EXCLUDE_GLOB_OPTION = 1016;
 constexpr int HEADING_OPTION = 1017;
+constexpr int FILES_OPTION = 1018;
 
 using std::cout;
 
@@ -124,7 +125,7 @@ void record_input_operands(const std::vector<std::string>& original_args, UserOp
             continue;
         }
 
-        if (!pattern_seen) {
+        if (!user_stats.list_files && !pattern_seen) {
             pattern_seen = true;
             continue;
         }
@@ -528,6 +529,7 @@ void printHelp(char* file_name)
     print_option("--glob GLOB", "Only searches paths matching GLOB");
     print_option("--exclude-glob GLOB", "Skips paths matching GLOB");
     print_option("--heading", "Groups line/source output under each matching file path");
+    print_option("--files", "Lists files mgrep would search, without requiring a pattern");
     print_option("--files-from FILE", "Reads newline-delimited input file paths from FILE");
     print_option("--files-from0 FILE, --null-files-from FILE", "Reads NUL-delimited input file paths from FILE");
     print_option("--no-color", "Disable ANSI color output");
@@ -578,6 +580,7 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
         {"glob", required_argument, nullptr, GLOB_OPTION},
         {"exclude-glob", required_argument, nullptr, EXCLUDE_GLOB_OPTION},
         {"heading", no_argument, nullptr, HEADING_OPTION},
+        {"files", no_argument, nullptr, FILES_OPTION},
         {"verbose", no_argument, nullptr, VERBOSE_OPTION},
         {nullptr, 0, nullptr, 0}
     };
@@ -717,6 +720,10 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
             case HEADING_OPTION:
                 user_stats.heading = true;
                 break;
+            case FILES_OPTION:
+                user_stats.list_files = true;
+                user_stats.recursive_mode = true;
+                break;
             case VERBOSE_OPTION:
                 user_stats.is_verbose = true;
                 break;
@@ -735,7 +742,10 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
         std::cerr << "ERROR: --only-matching cannot be used with --invert-match\n";
         return {false, MGREP_EXIT_ERROR, optind};
     }
-    if (argv[optind]) {
+    if (user_stats.list_files) {
+        user_stats.pattern.clear();
+        user_stats.folded_pattern.clear();
+    } else if (argv[optind]) {
         user_stats.pattern = literal_pattern
             ? std::string(argv[optind])
             : decode_pattern_escapes(argv[optind]);
@@ -749,6 +759,9 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
     }
 
     record_input_operands(original_args, user_stats);
+    if (user_stats.list_files && user_stats.input_operands.empty()) {
+        user_stats.input_operands.push_back({InputOperand::Kind::Path, ".", '\n'});
+    }
 
     return {true, MGREP_EXIT_MATCH_FOUND, optind};
 }
