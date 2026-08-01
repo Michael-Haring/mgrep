@@ -6,6 +6,7 @@
 #include "catch.hpp"
 #include "threads.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -50,6 +51,48 @@ std::string run_mgrep(
     std::string command = "HOME=";
     command += shell_quote(home_dir);
     command += " ./mgrep";
+    if (force_no_color) {
+        command += " --no-color";
+    }
+    for (const auto& arg : args) {
+        command.push_back(' ');
+        command += shell_quote(arg);
+    }
+    command += " 2>&1";
+
+    std::array<char, 4096> buffer{};
+    std::string output;
+
+    FILE* pipe = popen(command.c_str(), "r");
+    REQUIRE(pipe != nullptr);
+
+    while (fgets(buffer.data(), buffer.size(), pipe) != nullptr) {
+        output += buffer.data();
+    }
+
+    const int status = pclose(pipe);
+    if (exit_code != nullptr) {
+        *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : status;
+    }
+
+    return output;
+}
+
+std::string run_mgrep_in_dir(
+    const std::filesystem::path& work_dir,
+    const std::vector<std::string>& args,
+    int* exit_code = nullptr,
+    const std::string& home_dir = test_home_without_ignore(),
+    bool force_no_color = true
+)
+{
+    const std::filesystem::path mgrep_path = std::filesystem::current_path() / "mgrep";
+    std::string command = "cd ";
+    command += shell_quote(work_dir.string());
+    command += " && HOME=";
+    command += shell_quote(home_dir);
+    command.push_back(' ');
+    command += shell_quote(mgrep_path.string());
     if (force_no_color) {
         command += " --no-color";
     }
@@ -204,6 +247,60 @@ TEST_CASE("ThreadPool Construction")
     }
 }
 
+TEST_CASE("ThreadPool explicit size construction starts workers")
+{
+    ThreadPool tp(2);
+    std::atomic<unsigned int> completed{0};
+
+    REQUIRE(tp.m_workers.size() == 2);
+    REQUIRE(tp.m_w_stats.size() == 2);
+
+    for (unsigned int i = 0; i < 8; ++i) {
+        tp.push_task([&completed]() {
+            completed.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+
+    tp.wait_for_all();
+    REQUIRE(completed.load(std::memory_order_relaxed) == 8);
+    REQUIRE(tp.count_tasks_completed() == 8);
+}
+
+TEST_CASE("Help documents every accepted option and honors color settings")
+{
+    int exit_code = -1;
+    const std::string short_help = run_mgrep({"-h"}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(short_help.find('\x1b') == std::string::npos);
+
+    const std::array<const char*, 37> documented_options = {
+        "-h", "--help", "-v", "--invert-match", "-i", "--ignore-case",
+        "-r", "-m NUM", "--literal", "-c", "--count", "-q", "--quiet",
+        "-o", "--one-line", "-O", "--only-matching", "-l", "-s",
+        "-B NUM", "-A NUM", "-n", "--heading", "--verbose", "-a",
+        "--files", "--ff", "--files-from", "--files-from0", "--null-files-from",
+        "--type", "--ext", "--glob", "--exclude-glob", "--colors",
+        "-p, --pretty", "-t, --theme"
+    };
+    for (const char* option : documented_options) {
+        REQUIRE(short_help.find(option) != std::string::npos);
+    }
+    REQUIRE(short_help.find("--no-color") != std::string::npos);
+
+    const std::string long_help = run_mgrep({"--help"}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(long_help == short_help);
+
+    const std::string colored_help = run_mgrep(
+        {"-h"},
+        &exit_code,
+        test_home_without_ignore(),
+        false
+    );
+    REQUIRE(exit_code == 0);
+    REQUIRE(colored_help.find('\x1b') != std::string::npos);
+}
+
 TEST_CASE("Work Allocation")
 {
     ThreadPool tp;
@@ -308,6 +405,19 @@ TEST_CASE("Files option defaults to current directory")
 
     REQUIRE(exit_code == 0);
     REQUIRE(output.find("./mgrep\n") != std::string::npos);
+}
+
+TEST_CASE("Files option does not search explicit stdin operand")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "needle from stdin\n",
+        {"--files", "-"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
 }
 
 TEST_CASE("Type option can restrict recursive search to headers")
@@ -885,6 +995,23 @@ TEST_CASE("Dash path explicitly searches piped stdin")
     REQUIRE(output == "needle from dash\n");
 }
 
+TEST_CASE("Dash after option terminator is searched as a file path")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    write_file(fixture.root / "-", "needle from dash file\n");
+
+    const std::string output = run_mgrep_in_dir(fixture.root, {
+        "-s",
+        "needle",
+        "--",
+        "-"
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "-\nneedle from dash file\n");
+}
+
 TEST_CASE("Implicit and explicit stdin produce the same plain output")
 {
     const std::string input = "alpha\nneedle from stdin\nomega\n";
@@ -959,7 +1086,7 @@ TEST_CASE("Ignore-case only-matching output preserves matched casing")
     int exit_code = -1;
     const std::string output = run_mgrep_with_stdin(
         "Needle needle NEEDLE\n",
-        {"-io", "needle"},
+        {"-iO", "needle"},
         &exit_code
     );
 
@@ -1164,7 +1291,7 @@ TEST_CASE("Explicit dash supports only-matching mode")
     int exit_code = -1;
     const std::string output = run_mgrep_with_stdin(
         "needle needle\n",
-        {"-o", "needle", "-"},
+        {"-O", "needle", "-"},
         &exit_code
     );
 
@@ -1379,6 +1506,26 @@ TEST_CASE("Files-from searches newline-delimited explicit file paths")
     REQUIRE(output.find(display_path(fixture.root / "skip.bin")) != std::string::npos);
     REQUIRE(output.find(display_path(fixture.root / "src" / "two.md")) == std::string::npos);
     REQUIRE(output.find(display_path(fixture.root / "src" / "one.txt")) == std::string::npos);
+}
+
+TEST_CASE("FF aliases files-from with separate and equals arguments")
+{
+    CliFixture fixture;
+    const std::filesystem::path list_path = fixture.root / "ff-files.txt";
+    write_file(list_path, (fixture.root / "src" / "one.txt").string() + "\n");
+
+    const std::string separate_output = run_mgrep({
+        "--ff", list_path.string(),
+        "needle here"
+    });
+    const std::string equals_output = run_mgrep({
+        "--ff=" + list_path.string(),
+        "needle here"
+    });
+
+    const std::string expected = display_path(fixture.root / "src" / "one.txt") + "\n";
+    REQUIRE(separate_output == expected);
+    REQUIRE(equals_output == expected);
 }
 
 TEST_CASE("Files-from accepts CRLF-delimited file paths")
@@ -1690,7 +1837,7 @@ TEST_CASE("Only-matching stdin prints each occurrence on its own line")
     int exit_code = -1;
     const std::string output = run_mgrep_with_stdin(
         "needle one needle\nno match\nneedle\n",
-        {"-o", "needle"},
+        {"-O", "needle"},
         &exit_code
     );
 
@@ -1698,12 +1845,100 @@ TEST_CASE("Only-matching stdin prints each occurrence on its own line")
     REQUIRE(output == "needle\nneedle\nneedle\n");
 }
 
+TEST_CASE("One-line stdin prints one compact source record per match")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "needle one\nno match\nneedle two\n",
+        {"-o", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "needle one\nneedle two\n");
+}
+
+TEST_CASE("One-line file output includes path and optional line number")
+{
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "src" / "one.txt";
+
+    const std::string output = run_mgrep({"-ol", "needle", path.string()});
+
+    REQUIRE(output ==
+        path.string() + " 2: needle here\n" +
+        path.string() + " 4: needle again\n");
+}
+
+TEST_CASE("One-line output clips long records around the match")
+{
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "src" / "compact.txt";
+    write_file(path, std::string(140, 'a') + "needle" + std::string(140, 'z') + "\n");
+
+    const std::string output = run_mgrep({"-o", "needle", path.string()});
+
+    REQUIRE(output.find("needle") != std::string::npos);
+    REQUIRE(output.find("\xE2\x80\xA6") != std::string::npos);
+    REQUIRE(std::count(output.begin(), output.end(), '\n') == 1);
+    REQUIRE(output.size() <= 105);
+}
+
+TEST_CASE("Uppercase O retains only-matching behavior")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "needle one needle\n",
+        {"-O", "needle"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "needle\nneedle\n");
+}
+
+TEST_CASE("One-line long option works and incompatible layouts fail clearly")
+{
+    int exit_code = -1;
+    std::string output = run_mgrep_with_stdin(
+        "needle here\n",
+        {"--one-line", "needle"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "needle here\n");
+
+    output = run_mgrep_with_stdin(
+        "needle here\n",
+        {"-oO", "needle"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("--one-line cannot be used with --only-matching") != std::string::npos);
+
+    output = run_mgrep_with_stdin(
+        "needle here\n",
+        {"-oB", "1", "needle"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("--one-line cannot be used with context or --heading") != std::string::npos);
+
+    output = run_mgrep_with_stdin(
+        "alpha\nbeta\n",
+        {"-o", "alpha\\nbeta"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("--one-line cannot be used with a multiline pattern") != std::string::npos);
+}
+
 TEST_CASE("Only-matching empty pattern succeeds without zero-length output")
 {
     int exit_code = -1;
     const std::string output = run_mgrep_with_stdin(
         "alpha\nbeta\n",
-        {"-o", ""},
+        {"-O", ""},
         &exit_code
     );
 
@@ -1716,7 +1951,7 @@ TEST_CASE("Only-matching file output keeps path prefix")
     CliFixture fixture;
 
     const std::string output = run_mgrep({
-        "-o",
+        "-O",
         "needle",
         (fixture.root / "src" / "one.txt").string()
     });
@@ -1730,7 +1965,7 @@ TEST_CASE("Only-matching output supports line numbers")
     CliFixture fixture;
 
     const std::string output = run_mgrep({
-        "-ol",
+        "-Ol",
         "needle",
         (fixture.root / "src" / "one.txt").string()
     });
@@ -1743,7 +1978,7 @@ TEST_CASE("Only-matching output supports colors")
 {
     const std::string output = run_mgrep_with_stdin(
         "needle needle\n",
-        {"-po", "needle"}
+        {"-pO", "needle"}
     );
 
     REQUIRE(output == "\033[38;5;81mneedle\033[0m\n\033[38;5;81mneedle\033[0m\n");
@@ -1754,7 +1989,7 @@ TEST_CASE("Count mode overrides only-matching output")
     int exit_code = -1;
     const std::string output = run_mgrep_with_stdin(
         "needle needle\nneedle\n",
-        {"-co", "needle"},
+        {"-cO", "needle"},
         &exit_code
     );
 
@@ -1767,7 +2002,7 @@ TEST_CASE("Quiet mode overrides only-matching output")
     int exit_code = -1;
     const std::string output = run_mgrep_with_stdin(
         "needle needle\n",
-        {"-qo", "needle"},
+        {"-qO", "needle"},
         &exit_code
     );
 
@@ -1888,7 +2123,7 @@ TEST_CASE("Only-matching cannot be combined with invert match")
     int exit_code = -1;
     const std::string output = run_mgrep_with_stdin(
         "error\nok\n",
-        {"-vo", "error"},
+        {"-vO", "error"},
         &exit_code
     );
 
@@ -2471,6 +2706,176 @@ TEST_CASE("Pattern backslash escapes are decoded by default")
 
     REQUIRE(output.empty());
     REQUIRE(exit_code == 0);
+}
+
+TEST_CASE("Newline pattern count mode matches across lines")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path path = fixture.root / "newline-pattern-count.txt";
+    write_file(path, "alpha\nbeta\ngamma\n");
+
+    const std::string output = run_mgrep({
+        "--no-color",
+        "-c",
+        "alpha\\nbeta",
+        path.string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == display_path(path) + "\t1\n");
+}
+
+TEST_CASE("Newline pattern source mode prints full matching span")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path path = fixture.root / "newline-pattern-source.txt";
+    write_file(path, "alpha\nbeta\ngamma\n");
+
+    const std::string output = run_mgrep({
+        "--no-color",
+        "-s",
+        "alpha\\nbeta",
+        path.string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == display_path(path) + "\nalpha\nbeta\n");
+}
+
+TEST_CASE("Newline pattern only-matching mode prints the decoded match")
+{
+    int exit_code = -1;
+
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nbeta\ngamma\n",
+        {"--no-color", "-O", "alpha\\nbeta"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "alpha\nbeta\n");
+}
+
+TEST_CASE("Newline pattern path-only mode honors max-lines")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path path = fixture.root / "newline-pattern-max-lines.txt";
+    write_file(path, "alpha\nbeta\ngamma\n");
+
+    std::string output = run_mgrep({
+        "--no-color",
+        "-m", "2",
+        "alpha\\nbeta",
+        path.string()
+    }, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == display_path(path) + "\n");
+
+    output = run_mgrep({
+        "--no-color",
+        "-m", "1",
+        "alpha\\nbeta",
+        path.string()
+    }, &exit_code);
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Newline pattern quiet stdin mode honors max-lines")
+{
+    int exit_code = -1;
+
+    std::string output = run_mgrep_with_stdin(
+        "alpha\nbeta\ngamma\n",
+        {"--no-color", "-q", "-m", "2", "alpha\\nbeta"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+
+    output = run_mgrep_with_stdin(
+        "alpha\nbeta\ngamma\n",
+        {"--no-color", "-q", "-m", "1", "alpha\\nbeta"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Newline pattern file context includes surrounding lines")
+{
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "newline-pattern-context.txt";
+    write_file(path, "before\nalpha\nbeta\nafter\n");
+
+    const std::string output = run_mgrep({
+        "--no-color",
+        "-B", "1",
+        "-A", "1",
+        "alpha\\nbeta",
+        path.string()
+    });
+
+    const std::string expected =
+        "before\n" +
+        display_path(path) + "\nalpha\nbeta\n"
+        "after\n";
+    REQUIRE(output == expected);
+}
+
+TEST_CASE("Newline pattern stdin context includes surrounding lines")
+{
+    const std::string output = run_mgrep_with_stdin(
+        "before\nalpha\nbeta\nafter\n",
+        {"--no-color", "-B", "1", "-A", "1", "alpha\\nbeta"}
+    );
+
+    REQUIRE(output == "before\nalpha\nbeta\nafter\n");
+}
+
+TEST_CASE("Overlapping newline pattern context does not duplicate shared lines")
+{
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "newline-pattern-context-overlap.txt";
+    write_file(path, "pre\nalpha\nbeta\nmid\nalpha\nbeta\npost\n");
+
+    const std::string output = run_mgrep({
+        "--no-color",
+        "-B", "1",
+        "-A", "1",
+        "alpha\\nbeta",
+        path.string()
+    });
+
+    const std::string expected =
+        "pre\n" +
+        display_path(path) + "\nalpha\nbeta\n"
+        "mid\n" +
+        display_path(path) + "\nalpha\nbeta\n"
+        "post\n";
+    REQUIRE(output == expected);
+}
+
+TEST_CASE("Overlapping newline-only source matches do not duplicate shared lines")
+{
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "newline-only-source-overlap.txt";
+    write_file(path, "alpha\nbeta\ngamma\n");
+
+    const std::string output = run_mgrep({
+        "--no-color",
+        "-s",
+        "\\n",
+        path.string()
+    });
+
+    const std::string expected =
+        display_path(path) + "\nalpha\nbeta\n" +
+        display_path(path) + "\ngamma\n";
+    REQUIRE(output == expected);
 }
 
 TEST_CASE("Escaped punctuation remains fixed-string matching")

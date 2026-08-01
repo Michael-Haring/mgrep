@@ -1,0 +1,349 @@
+.TH MGREP 1 "August 2026" "mgrep" "User Commands"
+.SH NAME
+mgrep \- fast, multithreaded fixed-string search
+.SH SYNOPSIS
+.B mgrep
+.RI [ OPTIONS ] " PATTERN " [ PATH ...]
+.br
+.B mgrep
+.RI [ OPTIONS ] " PATTERN " \-
+.br
+.B mgrep
+.RI [ "FILTER OPTIONS" ] " --files " [ PATH ...]
+.SH DESCRIPTION
+.B mgrep
+searches files or standard input for a fixed string.
+It is designed around fast file discovery, literal matching, and batched output.
+Matching is not regular-expression based.
+.PP
+Without source or line-number output options, normal file searches print the path
+of each file containing a match. Options such as
+.BR \-s ,
+.BR \-l ,
+.BR \-o ,
+and
+.B \-O
+select more detailed output.
+.PP
+If
+.I PATH
+is
+.BR \- ,
+standard input is searched at that point in the operand sequence. If no path is
+given and standard input is redirected, standard input is searched automatically.
+Multiple paths, file lists, and standard-input operands may be combined.
+.SH PATTERN
+Patterns are fixed strings. By default, mgrep decodes
+.BR \en ,
+.BR \er ,
+.BR \et ,
+.BR \e0 ,
+.BR \e\e ,
+and
+.BI \ex NN
+escapes before searching. Other escaped characters lose the backslash and are
+searched literally. Use
+.B --literal
+to preserve backslashes exactly.
+.PP
+Matching is byte-oriented. The
+.B --ignore-case
+option folds ASCII letters only.
+.SH SEARCH OPTIONS
+.TP
+.BR \-h ", " --help
+Display concise command help and exit successfully.
+.TP
+.BR \-v ", " --invert-match
+Select lines that do not contain the pattern. This cannot be combined with
+.BR --only-matching .
+.TP
+.BR \-i ", " --ignore-case
+Match ASCII letters case-insensitively.
+.TP
+.B \-r
+Recursively search below directory operands. Without this option, directory
+handling is limited to the requested directory level.
+.TP
+.BI \-m " NUM"
+Read at most
+.I NUM
+lines from each input. A value of zero disables the limit.
+.TP
+.B --literal
+Treat every pattern backslash literally instead of decoding pattern escapes.
+.SH OUTPUT OPTIONS
+.TP
+.BR \-c ", " --count
+Print the number of selected lines for each input that has at least one selected
+line. Count output takes precedence over normal, one-line, and only-matching output.
+.TP
+.BR \-q ", " --quiet
+Print nothing and stop as soon as the requested search status is known. Exit status
+still indicates whether a match was found. Quiet mode takes precedence over other
+output modes.
+.TP
+.BR \-o ", " --one-line
+Print each selected source line as one physical output line. File records contain
+the path, an optional line number, and a match-centered source excerpt. Output is
+capped at 100 visible ASCII columns; ANSI control sequences do not count toward
+the limit. Long paths and source excerpts are marked with an ellipsis.
+.IP
+One-line mode cannot be combined with
+.BR \-B ,
+.BR \-A ,
+.BR --heading ,
+.BR --only-matching ,
+or a pattern containing a decoded newline.
+.TP
+.BR \-O ", " --only-matching
+Print only the matching text, once per non-overlapping occurrence. File output
+includes its path; add
+.B \-l
+to include line numbers. This cannot be combined with
+.BR --invert-match .
+.TP
+.B \-l
+Include the matching line number in output.
+.TP
+.B \-s
+Print the source line containing each selected match.
+.TP
+.BI \-B " NUM"
+Print up to
+.I NUM
+lines before each selected line.
+.TP
+.BI \-A " NUM"
+Print up to
+.I NUM
+lines after each selected line.
+.TP
+.B \-n
+Print an additional newline after each result.
+.TP
+.B --heading
+Group line and source output below one heading for each matching file.
+.TP
+.B --verbose
+Print completion and match statistics after searching. Quiet mode suppresses this
+summary.
+.SH INPUT AND FILTER OPTIONS
+.TP
+.B \-a
+Search all files. This permits binary-looking input and disables the normal ignore
+rules and extension-based skips. It may substantially increase work.
+.TP
+.B --files
+List the files mgrep would search instead of searching their contents. No pattern
+is required. With no path operand, this mode recursively lists from the current
+directory.
+.TP
+.BR --ff " " FILE ", " --files-from " " FILE
+Read newline-delimited input paths from
+.IR FILE .
+Use
+.B \-
+as the file-list name to read the path list from standard input.
+.TP
+.BR --files-from0 " " FILE ", " --null-files-from " " FILE
+Read NUL-delimited input paths from
+.IR FILE .
+The NUL form supports paths containing newlines.
+.TP
+.BI --type " TYPE"
+Search only files belonging to a named type. Supported names are
+.BR header ,
+.BR headers ,
+.BR source ,
+.BR sources ,
+.BR cpp ,
+and
+.BR c++ .
+.TP
+.BI --ext " EXT[,EXT...]"
+Search only files whose extensions occur in the comma-separated list. A leading
+dot is optional.
+.TP
+.BI --glob " GLOB"
+Search only paths matching
+.IR GLOB .
+The matcher supports
+.BR * ,
+.BR ? ,
+and recursive
+.B **
+components.
+.TP
+.BI --exclude-glob " GLOB"
+Skip paths matching
+.IR GLOB .
+May be specified more than once.
+.TP
+.B --
+End option parsing. This permits patterns or paths beginning with a hyphen.
+.SH APPEARANCE OPTIONS
+.TP
+.BR \-p ", " --pretty
+Compatibility alias. ANSI colors are enabled by default.
+.TP
+.BR \-t " THEME" ", " --theme " THEME"
+Select a color theme. Supported themes are
+.BR blue ,
+.BR red ,
+.BR green ,
+.BR purple ,
+.BR cyan ,
+.BR yellow ,
+.BR orange ,
+.BR pink ,
+.BR mono ,
+.BR bright ,
+.BR gruvbox ,
+.BR nord ,
+.BR dracula ,
+and
+.BR nebula .
+.TP
+.B --no-color
+Disable ANSI color output, including concise help when specified before
+.BR \-h .
+.TP
+.BI --colors " COMPONENT:ATTR:VALUE"
+Override one color attribute. Components are
+.BR path ,
+.BR file ,
+.BR line ,
+.BR match ,
+and
+.BR source .
+Attributes are
+.BR fg ,
+.BR bg ,
+and
+.BR style .
+Foreground and background values may be a number from 0 through 255 or one of
+.BR black ,
+.BR red ,
+.BR green ,
+.BR yellow ,
+.BR blue ,
+.BR magenta ,
+.BR purple ,
+.BR cyan ,
+.BR white ,
+.BR gray ,
+or
+.BR grey .
+Styles are
+.BR bold ,
+.BR dim ,
+.BR italic ,
+.BR underline ,
+and
+.BR reverse .
+The option may be repeated. For example:
+.PP
+.RS
+.B --colors match:fg:magenta --colors source:fg:cyan
+.RE
+.SH DEFAULT FILE SELECTION
+Unless
+.B \-a
+is used, mgrep skips binary-looking input, hidden directories, common build and
+cache directories, archives, media, object files, and files without extensions.
+It also loads ignore rules from
+.IR $HOME/.ignore
+when that file exists. Explicit file operands remain subject to active type,
+extension, and glob filters.
+.SH HOME IGNORE RULES
+During normal searches, mgrep reads
+.IR $HOME/.ignore .
+Leading and trailing whitespace is removed. Empty lines, comments beginning with
+.BR # ,
+and negation rules beginning with
+.B !
+are ignored. Negation is not currently supported.
+.PP
+A plain name skips files and directories with that basename. A trailing slash
+makes a rule directory-only. A leading
+.B *
+creates a basename suffix rule, such as
+.B *.generated
+or
+.BR *cache/ .
+Directory prefixes are discarded, and rules containing
+.B ?
+or
+.B [
+are ignored. This is intentionally a limited subset rather than full gitignore
+syntax.
+.SH ENVIRONMENT
+.TP
+.B HOME
+Locates the optional
+.I .ignore
+file used by normal searches.
+.SH EXIT STATUS
+.TP
+.B 0
+At least one match was found, concise help was displayed, or
+.B --files
+completed successfully.
+.TP
+.B 1
+The search completed successfully but found no matches.
+.TP
+.B 2
+An error occurred, such as invalid options, an invalid option combination, a
+missing pattern, an invalid path, or an unreadable file list.
+.PP
+With
+.BR --quiet ,
+a found match may take precedence over errors encountered later because the search
+stops as soon as success is known.
+.SH EXAMPLES
+Recursively find files containing a fixed string:
+.PP
+.RS
+.B "mgrep -r 'int main(' ."
+.RE
+.PP
+Print matching source with line numbers:
+.PP
+.RS
+.B mgrep -rls needle src
+.RE
+.PP
+Print compact one-line records:
+.PP
+.RS
+.B mgrep -rol needle src
+.RE
+.PP
+Print each matched occurrence:
+.PP
+.RS
+.B mgrep -rO needle src
+.RE
+.PP
+Search redirected standard input without colors:
+.PP
+.RS
+.B command | mgrep --no-color needle
+.RE
+.PP
+List C and C++ source files mgrep would search:
+.PP
+.RS
+.B mgrep --files --type source .
+.RE
+.SH FILES
+.TP
+.I $HOME/.ignore
+Optional user ignore rules loaded during normal file searches.
+.SH SEE ALSO
+.BR grep (1),
+.BR rg (1)
+.SH AUTHORS
+Michael Haring and contributors.

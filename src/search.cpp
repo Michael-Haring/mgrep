@@ -1,3 +1,11 @@
+/*
+* @file   search.cpp
+* @author Michael Haring
+* @date   05/24/26
+*
+* This file contains all search algorithms and functions.
+*
+* */
 #include "search.hpp"
 
 #include "output.hpp"
@@ -101,6 +109,11 @@ const char* find_match(const char* data, size_t size, const UserOptions& user_st
 bool contains_match(const char* data, size_t size, const UserOptions& user_stats)
 {
     return find_match(data, size, user_stats) != nullptr;
+}
+
+bool pattern_has_newline(const UserOptions& user_stats)
+{
+    return user_stats.pattern.find('\n') != std::string::npos;
 }
 
 FastScanResult scan_text_chunk_case_insensitive(
@@ -322,6 +335,59 @@ bool direct_output_available()
     return direct_output_fn != nullptr;
 }
 
+template <size_t BufferSize, typename ProcessLine>
+bool read_fd_lines(
+    int fd,
+    std::array<char, BufferSize>& buffer,
+    std::string& pending_line,
+    bool allow_binary,
+    bool& stop,
+    ProcessLine&& process_line
+)
+{
+    while (!stop) {
+        const ssize_t bytes_read = ::read(fd, buffer.data(), buffer.size());
+        if (bytes_read <= 0) {
+            break;
+        }
+
+        const char* chunk_start = buffer.data();
+        const char* chunk_end = chunk_start + bytes_read;
+        const char* line_start = chunk_start;
+
+        if (!allow_binary && std::memchr(chunk_start, '\0', bytes_read) != nullptr) {
+            return false;
+        }
+
+        while (line_start < chunk_end) {
+            const void* newline_hit = std::memchr(line_start, '\n', chunk_end - line_start);
+            if (newline_hit == nullptr) {
+                pending_line.append(line_start, chunk_end - line_start);
+                break;
+            }
+
+            const char* line_end = static_cast<const char*>(newline_hit);
+            if (!pending_line.empty()) {
+                pending_line.append(line_start, line_end - line_start);
+                process_line(pending_line.data(), pending_line.size());
+                pending_line.clear();
+            } else {
+                process_line(line_start, line_end - line_start);
+            }
+
+            if (stop) {
+                break;
+            }
+            line_start = line_end + 1;
+        }
+    }
+
+    if (!stop && !pending_line.empty()) {
+        process_line(pending_line.data(), pending_line.size());
+    }
+    return true;
+}
+
 MGREP_COLD_NOINLINE void emit_direct_source(
     std::string& output,
     const char* line_data,
@@ -437,6 +503,352 @@ void clear_direct_output_context()
 {
     direct_output_fn = nullptr;
     direct_output_context = nullptr;
+}
+
+size_t line_start_for_offset(const std::string& content, size_t offset)
+{
+    if (offset == 0) {
+        return 0;
+    }
+
+    const size_t newline_pos = content.rfind('\n', offset - 1);
+    return newline_pos == std::string::npos ? 0 : newline_pos + 1;
+}
+
+size_t line_end_after_offset(const std::string& content, size_t offset)
+{
+    const size_t newline_pos = content.find('\n', offset);
+    return newline_pos == std::string::npos ? content.size() : newline_pos;
+}
+
+size_t line_start_before(const std::string& content, size_t offset, unsigned int lines)
+{
+    size_t start = offset;
+    while (lines > 0 && start > 0) {
+        const size_t search_pos = start >= 2 ? start - 2 : 0;
+        const size_t newline_pos = content.rfind('\n', search_pos);
+        start = newline_pos == std::string::npos ? 0 : newline_pos + 1;
+        --lines;
+    }
+    return start;
+}
+
+size_t line_end_after(const std::string& content, size_t offset, unsigned int lines)
+{
+    size_t end = offset;
+    while (lines > 0 && end < content.size()) {
+        if (content[end] == '\n') {
+            ++end;
+        }
+        const size_t newline_pos = content.find('\n', end);
+        if (newline_pos == std::string::npos) {
+            return content.size();
+        }
+        end = newline_pos;
+        --lines;
+    }
+    return end;
+}
+
+void append_line_prefix_for_options(std::string& output, size_t line_num, const UserOptions& user_stats)
+{
+    if (!user_stats.line_number_print) {
+        return;
+    }
+
+    if (user_stats.cool_colors) {
+        output.append(user_stats.colors.line);
+        output.append(std::to_string(line_num));
+        output.append(":");
+        output.append(RESET);
+    } else {
+        output.append(std::to_string(line_num));
+        output.append(":");
+    }
+    output.push_back('\t');
+}
+
+size_t read_all_fd(int fd, std::string& content, bool allow_binary)
+{
+    constexpr size_t BUFFER_SIZE = 128 * 1024;
+    std::array<char, BUFFER_SIZE> buffer;
+
+    while (true) {
+        const ssize_t bytes_read = ::read(fd, buffer.data(), buffer.size());
+        if (bytes_read <= 0) {
+            break;
+        }
+
+        if (!allow_binary &&
+            std::memchr(buffer.data(), '\0', static_cast<size_t>(bytes_read)) != nullptr) {
+            content.clear();
+            return 0;
+        }
+
+        content.append(buffer.data(), static_cast<size_t>(bytes_read));
+    }
+
+    return content.size();
+}
+
+void apply_max_lines_limit(std::string& content, unsigned int max_lines)
+{
+    if (max_lines == 0) {
+        return;
+    }
+
+    unsigned int lines_seen = 0;
+    for (size_t i = 0; i < content.size(); ++i) {
+        if (content[i] != '\n') {
+            continue;
+        }
+
+        ++lines_seen;
+        if (lines_seen == max_lines) {
+            content.resize(i);
+            return;
+        }
+    }
+}
+
+size_t emit_multiline_content_matches(
+    const std::string* path,
+    UserOptions& user_stats,
+    const std::string& content,
+    std::string& output
+)
+{
+    const size_t pattern_len = user_stats.pattern.size();
+    if (pattern_len == 0) {
+        return 0;
+    }
+
+    size_t local_matches = 0;
+    size_t scan_pos = 0;
+    size_t last_reported_line = 0;
+    size_t line_scan_pos = 0;
+    size_t current_line_num = 1;
+    size_t last_output_offset = 0;
+    bool heading_printed = false;
+    const bool has_path = path != nullptr;
+    const bool emits_source =
+        !user_stats.only_matching &&
+        (user_stats.source_print ||
+         user_stats.print_before_source > 0 ||
+         user_stats.print_after_source > 0 ||
+         !has_path);
+    const bool heading_mode =
+        has_path &&
+        user_stats.heading &&
+        !user_stats.count_print &&
+        !user_stats.only_matching &&
+        !user_stats.quiet;
+
+    size_t cached_name_pos = std::string::npos;
+    auto get_name_pos = [&]() {
+        if (!has_path) {
+            return size_t{0};
+        }
+        if (cached_name_pos == std::string::npos) {
+            cached_name_pos = filename_pos(*path);
+        }
+        return cached_name_pos;
+    };
+
+    auto append_path = [&]() {
+        if (!has_path) {
+            return;
+        }
+        if (user_stats.cool_colors) {
+            append_colored_path(output, *path, get_name_pos(), user_stats.colors);
+        } else {
+            append_plain_path(output, *path, get_name_pos());
+        }
+    };
+
+    auto ensure_heading = [&]() {
+        if (!heading_mode || heading_printed) {
+            return;
+        }
+        append_path();
+        output.push_back('\n');
+        heading_printed = true;
+    };
+
+    auto line_num_at = [&](size_t offset) {
+        while (line_scan_pos < offset && line_scan_pos < content.size()) {
+            if (content[line_scan_pos] == '\n') {
+                ++current_line_num;
+            }
+            ++line_scan_pos;
+        }
+        return current_line_num;
+    };
+
+    while (scan_pos <= content.size()) {
+        const char* hit = find_match(
+            content.data() + scan_pos,
+            content.size() - scan_pos,
+            user_stats
+        );
+        if (hit == nullptr) {
+            break;
+        }
+
+        const size_t hit_offset = static_cast<size_t>(hit - content.data());
+        const size_t line_num = line_num_at(hit_offset);
+        if (user_stats.count_print) {
+            if (line_num != last_reported_line) {
+                ++local_matches;
+                last_reported_line = line_num;
+            }
+            scan_pos = hit_offset + pattern_len;
+            continue;
+        }
+
+        if (user_stats.only_matching) {
+            if (has_path) {
+                append_path();
+                if (user_stats.line_number_print) {
+                    output.push_back(' ');
+                    if (user_stats.cool_colors) {
+                        output.append(user_stats.colors.line);
+                        output.append(std::to_string(line_num));
+                        output.append(":");
+                        output.append(RESET);
+                    } else {
+                        output.append(std::to_string(line_num));
+                        output.append(":");
+                    }
+                }
+                output.push_back('\t');
+            } else {
+                append_line_prefix_for_options(output, line_num, user_stats);
+            }
+
+            if (user_stats.cool_colors) {
+                output.append(user_stats.colors.match);
+                output.append(hit, pattern_len);
+                output.append(RESET);
+            } else {
+                output.append(hit, pattern_len);
+            }
+            output.append(user_stats.add_newline ? "\n\n" : "\n");
+            ++local_matches;
+            scan_pos = hit_offset + pattern_len;
+            continue;
+        }
+
+        if (line_num == last_reported_line) {
+            scan_pos = hit_offset + pattern_len;
+            continue;
+        }
+
+        const size_t span_start = line_start_for_offset(content, hit_offset);
+        const size_t span_end = line_end_after_offset(content, hit_offset + pattern_len);
+        const size_t context_start = line_start_before(content, span_start, user_stats.print_before_source);
+        const size_t context_end = line_end_after(content, span_end, user_stats.print_after_source);
+        ensure_heading();
+
+        const size_t before_start = std::max(context_start, last_output_offset);
+        if (before_start < span_start) {
+            output.append(content.data() + before_start, span_start - before_start);
+        }
+
+        const size_t match_start = std::max(span_start, last_output_offset);
+        const size_t after_start = std::max(span_end, last_output_offset);
+        if (match_start >= span_end && after_start >= context_end) {
+            ++local_matches;
+            last_reported_line = line_num;
+            scan_pos = hit_offset + pattern_len;
+            continue;
+        }
+
+        if (!heading_mode && has_path) {
+            append_path();
+        }
+
+        if (emits_source) {
+            if (has_path && !heading_mode) {
+                output.push_back('\n');
+            }
+            append_line_prefix_for_options(output, line_num, user_stats);
+            if (user_stats.cool_colors) {
+                append_highlighted_source(
+                    output,
+                    content.data() + match_start,
+                    span_end - match_start,
+                    hit,
+                    pattern_len,
+                    user_stats.colors
+                );
+            } else {
+                output.append(content.data() + match_start, span_end - match_start);
+            }
+        } else if (user_stats.line_number_print) {
+            if (has_path) {
+                output.push_back(' ');
+            }
+            if (user_stats.cool_colors) {
+                output.append(user_stats.colors.line);
+                output.append(std::to_string(line_num));
+                output.append(":");
+                output.append(RESET);
+            } else {
+                output.append(std::to_string(line_num));
+                output.append(":");
+            }
+        }
+
+        if (after_start < context_end) {
+            output.append(content.data() + after_start, context_end - after_start);
+        }
+
+        output.append(user_stats.add_newline ? "\n\n" : "\n");
+        const size_t consumed_output_end =
+            context_end < content.size() && content[context_end] == '\n'
+                ? context_end + 1
+                : context_end;
+        last_output_offset = std::max(last_output_offset, consumed_output_end);
+        ++local_matches;
+        last_reported_line = line_num;
+        scan_pos = hit_offset + pattern_len;
+    }
+
+    if (user_stats.count_print && local_matches > 0) {
+        if (has_path) {
+            append_path();
+            output.push_back('\t');
+        }
+        output.append(std::to_string(local_matches));
+        output.push_back('\n');
+    }
+
+    return local_matches;
+}
+
+size_t read_file_multiline_pattern(const std::string& path, UserOptions& user_stats, std::string& output)
+{
+    int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd == -1) {
+        return 0;
+    }
+
+    std::string content;
+    content.reserve(128 * 1024);
+    read_all_fd(fd, content, user_stats.all_files);
+    ::close(fd);
+    apply_max_lines_limit(content, user_stats.max_lines);
+
+    if (content.empty()) {
+        return 0;
+    }
+
+    if (user_stats.quiet) {
+        return contains_match(content.data(), content.size(), user_stats) ? 1 : 0;
+    }
+
+    return emit_multiline_content_matches(&path, user_stats, content, output);
 }
 
 size_t read_file_fast(const std::string& path, UserOptions& user_stats, std::string& output)
@@ -605,6 +1017,7 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
         size_t last_output_line_num = 0;
         const bool invert_path_only =
             user_stats.invert_match &&
+            !user_stats.one_line &&
             !user_stats.source_print &&
             !user_stats.line_number_print &&
             before == 0 &&
@@ -686,6 +1099,25 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
         ) {
             if (user_stats.quiet) {
                 ++local_matches;
+                return;
+            }
+
+            if (user_stats.one_line) {
+                append_one_line_source(
+                    output,
+                    &path,
+                    match_line_num,
+                    user_stats.line_number_print,
+                    line_data,
+                    line_len,
+                    hit,
+                    pattern_len,
+                    user_stats.colors,
+                    user_stats.cool_colors
+                );
+                output.append(user_stats.add_newline ? "\n\n" : "\n");
+                ++local_matches;
+                last_output_line_num = match_line_num;
                 return;
             }
 
@@ -1054,51 +1486,16 @@ size_t read_file_count(const std::string& path, UserOptions& user_stats, std::st
         }
     };
 
-    while (!stop) {
-        ssize_t bytes_read = ::read(fd, buffer.data(), buffer.size());
-
-        if (bytes_read <= 0) {
-            break;
-        }
-
-        const char* chunk_start = buffer.data();
-        const char* chunk_end = buffer.data() + bytes_read;
-        const char* line_start = chunk_start;
-
-        if (!user_stats.all_files && std::memchr(chunk_start, '\0', bytes_read) != nullptr) {
-            output.resize(output_start);
-            ::close(fd);
-            return 0;
-        }
-
-        while (line_start < chunk_end) {
-            const void* newline_hit = std::memchr(line_start, '\n', chunk_end - line_start);
-
-            if (!newline_hit) {
-                pending_line.append(line_start, chunk_end - line_start);
-                break;
-            }
-
-            const char* line_end = static_cast<const char*>(newline_hit);
-
-            if (!pending_line.empty()) {
-                pending_line.append(line_start, line_end - line_start);
-                process_line(pending_line.data(), pending_line.size());
-                pending_line.clear();
-            } else {
-                process_line(line_start, line_end - line_start);
-            }
-
-            if (stop) {
-                break;
-            }
-
-            line_start = line_end + 1;
-        }
-    }
-
-    if (!stop && !pending_line.empty()) {
-        process_line(pending_line.data(), pending_line.size());
+    if (!read_fd_lines(
+            fd,
+            buffer,
+            pending_line,
+            user_stats.all_files,
+            stop,
+            process_line)) {
+        output.resize(output_start);
+        ::close(fd);
+        return 0;
     }
 
     ::close(fd);
@@ -1260,6 +1657,20 @@ size_t read_file_only_matching(const std::string& path, UserOptions& user_stats,
 
 ReadFileFn choose_read_file(const UserOptions& user_stats)
 {
+    if (pattern_has_newline(user_stats) &&
+        !user_stats.invert_match &&
+        (user_stats.count_print ||
+         user_stats.only_matching ||
+         user_stats.source_print ||
+         user_stats.line_number_print ||
+         user_stats.quiet ||
+         user_stats.max_lines > 0 ||
+         user_stats.print_before_source > 0 ||
+         user_stats.print_after_source > 0 ||
+         user_stats.heading)) {
+        return read_file_multiline_pattern;
+    }
+
     if (user_stats.quiet && (user_stats.invert_match || user_stats.max_lines > 0)) {
         return read_file_line_options;
     }
@@ -1281,6 +1692,7 @@ ReadFileFn choose_read_file(const UserOptions& user_stats)
     }
 
     if (!user_stats.source_print &&
+        !user_stats.one_line &&
         !user_stats.line_number_print &&
         user_stats.print_before_source == 0 &&
         user_stats.print_after_source == 0 &&
@@ -1341,6 +1753,32 @@ size_t search_stdin(UserOptions& user_stats)
     std::array<char, LINE_BUFFER_SIZE> buffer;
     std::string output;
     output.reserve(8192);
+
+    if (pattern_has_newline(user_stats) &&
+        !user_stats.invert_match &&
+        (!user_stats.quiet || user_stats.max_lines > 0)) {
+        std::string content;
+        content.reserve(128 * 1024);
+        read_all_fd(STDIN_FILENO, content, user_stats.all_files);
+        apply_max_lines_limit(content, user_stats.max_lines);
+        if (!content.empty()) {
+            if (user_stats.quiet) {
+                const size_t local_matches =
+                    contains_match(content.data(), content.size(), user_stats) ? 1 : 0;
+                matches += local_matches;
+                return local_matches;
+            }
+
+            const size_t local_matches =
+                emit_multiline_content_matches(nullptr, user_stats, content, output);
+            if (!user_stats.quiet) {
+                cout << output;
+            }
+            matches += local_matches;
+            return local_matches;
+        }
+        return 0;
+    }
 
     std::string pending_line;
     pending_line.reserve(4096);
@@ -1497,49 +1935,15 @@ size_t search_stdin(UserOptions& user_stats)
             }
         };
 
-        while (!stop) {
-            ssize_t bytes_read = ::read(STDIN_FILENO, buffer.data(), buffer.size());
-
-            if (bytes_read <= 0) {
-                break;
-            }
-
-            if (stdin_has_binary(buffer.data(), static_cast<size_t>(bytes_read))) {
-                return 0;
-            }
-
-            const char* chunk_start = buffer.data();
-            const char* chunk_end = buffer.data() + bytes_read;
-            const char* line_start = chunk_start;
-
-            while (line_start < chunk_end) {
-                const void* newline_hit = std::memchr(line_start, '\n', chunk_end - line_start);
-
-                if (!newline_hit) {
-                    pending_line.append(line_start, chunk_end - line_start);
-                    break;
-                }
-
-                const char* line_end = static_cast<const char*>(newline_hit);
-
-                if (!pending_line.empty()) {
-                    pending_line.append(line_start, line_end - line_start);
-                    process_count_line(pending_line.data(), pending_line.size());
-                    pending_line.clear();
-                } else {
-                    process_count_line(line_start, line_end - line_start);
-                }
-
-                if (stop) {
-                    break;
-                }
-
-                line_start = line_end + 1;
-            }
-        }
-
-        if (!stop && !pending_line.empty()) {
-            process_count_line(pending_line.data(), pending_line.size());
+        if (!read_fd_lines(
+                STDIN_FILENO,
+                buffer,
+                pending_line,
+                user_stats.all_files,
+                stop,
+                process_count_line)) {
+            output.clear();
+            return 0;
         }
 
         if (local_matches > 0) {
@@ -1677,6 +2081,26 @@ size_t search_stdin(UserOptions& user_stats)
         size_t match_line_num,
         const char* hit
     ) {
+        if (user_stats.one_line) {
+            append_one_line_source(
+                output,
+                nullptr,
+                match_line_num,
+                user_stats.line_number_print,
+                line_data,
+                line_len,
+                hit,
+                pattern_len,
+                user_stats.colors,
+                user_stats.cool_colors
+            );
+            output.append(user_stats.add_newline ? "\n\n" : "\n");
+            ++local_matches;
+            last_output_line_num = match_line_num;
+            flush_if_needed();
+            return;
+        }
+
         if (user_stats.line_number_print) {
             if (user_stats.cool_colors) {
                 output.append(user_stats.colors.line);

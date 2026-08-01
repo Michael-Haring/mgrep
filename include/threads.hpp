@@ -31,6 +31,7 @@ public:
 
     void push_task(std::function<void()> task);
     size_t create_workers();
+    size_t create_workers(size_t max_threads);
 
     void work_loop(struct WorkerContext &w_stat);
 

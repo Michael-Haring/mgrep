@@ -9,7 +9,7 @@
 #include <iostream>
 #include <vector>
 
-constexpr char* OPTIONS = (char*)"vhrcpnlsaqoit:B:A:m:";
+constexpr char* OPTIONS = (char*)"vhrcpnlsaqoiOt:B:A:m:";
 constexpr int COLORS_OPTION = 1000;
 constexpr int COUNT_OPTION = 1001;
 constexpr int PRETTY_OPTION = 1002;
@@ -29,6 +29,7 @@ constexpr int GLOB_OPTION = 1015;
 constexpr int EXCLUDE_GLOB_OPTION = 1016;
 constexpr int HEADING_OPTION = 1017;
 constexpr int FILES_OPTION = 1018;
+constexpr int ONE_LINE_OPTION = 1019;
 
 using std::cout;
 
@@ -40,6 +41,7 @@ bool short_option_takes_argument(char option)
 bool long_option_takes_argument(std::string_view option)
 {
     return option == "--colors" ||
+        option == "--ff" ||
         option == "--files-from" ||
         option == "--files-from0" ||
         option == "--null-files-from" ||
@@ -62,7 +64,7 @@ bool append_file_list_operand(
         ? option
         : option.substr(0, equals_pos);
 
-    const bool is_files_from = name == "--files-from";
+    const bool is_files_from = name == "--files-from" || name == "--ff";
     const bool is_files_from0 = name == "--files-from0" || name == "--null-files-from";
     if (!is_files_from && !is_files_from0) {
         return false;
@@ -130,7 +132,11 @@ void record_input_operands(const std::vector<std::string>& original_args, UserOp
             continue;
         }
 
-        user_stats.input_operands.push_back({InputOperand::Kind::Path, arg, '\n'});
+        user_stats.input_operands.push_back({
+            !options_ended && arg == "-" ? InputOperand::Kind::Stdin : InputOperand::Kind::Path,
+            arg,
+            '\n'
+        });
     }
 }
 
@@ -505,49 +511,64 @@ std::string decode_pattern_escapes(const std::string& pattern)
     return decoded;
 }
 
-void printHelp(char* file_name)
+void printHelp(const char* file_name, const UserOptions& user_stats)
 {
-    auto print_option = [](const char* option, const char* description) {
-        cout << "\t" << FILE_ORANGE << option << RESET << "\t" << description << "\n";
+    const std::string& accent = user_stats.cool_colors
+        ? user_stats.colors.file
+        : std::string{};
+    const char* reset = user_stats.cool_colors ? RESET : "";
+    auto print_option = [&](const char* option, const char* description) {
+        cout << "  " << accent << option << reset << "\n      " << description << "\n";
     };
 
-    cout << FILE_ORANGE << "Printing help for program: " << RESET << file_name << "\n";
-    print_option("-h", "Prints this marvalous help test");
+    cout << accent << "mgrep" << reset << " - fast fixed-string search\n\n";
+    cout << "Usage:\n";
+    cout << "  " << file_name << " [OPTIONS] PATTERN [PATH ...]\n";
+    cout << "  " << file_name << " [OPTIONS] PATTERN -\n";
+    cout << "  " << file_name << " [FILTER OPTIONS] --files [PATH ...]\n\n";
+
+    cout << "Search options:\n";
+    print_option("-h, --help", "Show this help and exit");
     print_option("-v, --invert-match", "Prints lines that do not contain the pattern");
     print_option("-i, --ignore-case", "Matches ASCII letters case-insensitively");
-    print_option("--verbose", "Enables verbose output ");
-    print_option("-r", "Recursively search all dirs below dir provided");
-    print_option("-p, --pretty", "Compatibility alias; colors are enabled by default");
-    print_option("-t, --theme THEME", "Select color theme: blue, red, green, purple,");
-    cout << "\t\tcyan, yellow, orange, pink, mono, bright,\n";
-    cout << "\t\tgruvbox, nord, dracula, nebula\n";
+    print_option("-r", "Recursively search directories");
+    print_option("-m NUM", "Read at most NUM lines from each input");
+    print_option("--literal", "Treat backslashes in the pattern literally instead of decoding escapes");
+
+    cout << "\nOutput options:\n";
     print_option("-c, --count", "Prints matching line counts instead of normal matches");
     print_option("-q, --quiet", "Prints nothing, only returns match status");
-    print_option("-o, --only-matching", "Prints only matching text, one occurrence per line");
+    print_option("-o, --one-line", "Prints each result on one line, capped at 100 columns");
+    print_option("-O, --only-matching", "Prints only matching text, one occurrence per line");
+    print_option("-l", "Prints matching line numbers");
+    print_option("-s", "Prints matching source lines");
+    print_option("-B NUM", "Prints NUM lines before each matching line");
+    print_option("-A NUM", "Prints NUM lines after each matching line");
+    print_option("-n", "Prints an additional newline after each result");
+    print_option("--heading", "Groups line/source output under each matching file path");
+    print_option("--verbose", "Prints completion and match statistics");
+
+    cout << "\nInput and filtering options:\n";
+    print_option("-a", "Searches all files, including binary-looking and normally skipped files");
+    print_option("--files", "Lists files mgrep would search, without requiring a pattern");
+    print_option("--ff FILE, --files-from FILE", "Reads newline-delimited input file paths from FILE");
+    print_option("--files-from0 FILE, --null-files-from FILE", "Reads NUL-delimited input file paths from FILE");
     print_option("--type TYPE", "Only searches files in a named type: header, source, cpp");
     print_option("--ext EXT[,EXT...]", "Only searches files with matching extensions");
     print_option("--glob GLOB", "Only searches paths matching GLOB");
     print_option("--exclude-glob GLOB", "Skips paths matching GLOB");
-    print_option("--heading", "Groups line/source output under each matching file path");
-    print_option("--files", "Lists files mgrep would search, without requiring a pattern");
-    print_option("--files-from FILE", "Reads newline-delimited input file paths from FILE");
-    print_option("--files-from0 FILE, --null-files-from FILE", "Reads NUL-delimited input file paths from FILE");
-    print_option("--no-color", "Disable ANSI color output");
-    print_option("--literal", "Treat backslashes in the pattern literally");
-    print_option("--colors COMPONENT:ATTR:VALUE", "Override colors. Components: path, file, line, match, source");
-    cout << "\t\tAttrs: fg, bg, style. Example: --colors match:fg:magenta\n";
-    print_option("-n", "Prints an additional newline between pattern finds");
-    print_option("-l", "Prints line number in file pattern is found in");
-    print_option("-s", "Prints line of source code the pattern was found in");
-    print_option("-a", "Searches all files.");
-    cout << "\t\tBy default, mgrep skips hidden dirs, common build/cache dirs,\n";
-    cout << "\t\tbinary-looking files, archives, media, object files, and files\n";
-    cout << "\t\twithout extensions. Use -a to search everything.\n";
 
-    cout << "\nmgrep is a groundbreaking new program brought to you by MNU\n";
-    cout << "\tUsage:\tmgrep -[OPTIONS] \"pattern\" root_dir\n";
-    cout << "\tgrep -r \"main\" .\n";
-    cout << "Exactly like grep, but better because I made it.\n";
+    cout << "\nAppearance options:\n";
+    print_option("-p, --pretty", "Compatibility alias; colors are enabled by default");
+    print_option("-t, --theme THEME", "Selects a named color theme; see mgrep(1) for names");
+    print_option("--no-color", "Disable ANSI color output");
+    print_option("--colors COMPONENT:ATTR:VALUE", "Override colors. Components: path, file, line, match, source");
+    cout << "      Attributes: fg, bg, style. Example: --colors match:fg:magenta\n";
+
+    cout << "\nA PATH of '-' reads standard input. If no PATH is given and standard input\n";
+    cout << "is redirected, mgrep reads standard input. Use '--' to end option parsing.\n";
+    cout << "--one-line cannot be combined with context, --heading, --only-matching,\n";
+    cout << "or a multiline pattern. See mgrep(1) for full details and exit statuses.\n";
 }
 
 ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
@@ -563,15 +584,18 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
     int opt = 0;
     static option long_options[] = {
         {"colors", required_argument, nullptr, COLORS_OPTION},
+        {"help", no_argument, nullptr, 'h'},
         {"count", no_argument, nullptr, COUNT_OPTION},
         {"pretty", no_argument, nullptr, PRETTY_OPTION},
         {"theme", required_argument, nullptr, THEME_OPTION},
         {"no-color", no_argument, nullptr, NO_COLOR_OPTION},
         {"quiet", no_argument, nullptr, QUIET_OPTION},
         {"files-from", required_argument, nullptr, FILES_FROM_OPTION},
+        {"ff", required_argument, nullptr, FILES_FROM_OPTION},
         {"files-from0", required_argument, nullptr, FILES_FROM0_OPTION},
         {"null-files-from", required_argument, nullptr, FILES_FROM0_OPTION},
         {"only-matching", no_argument, nullptr, ONLY_MATCHING_OPTION},
+        {"one-line", no_argument, nullptr, ONE_LINE_OPTION},
         {"invert-match", no_argument, nullptr, INVERT_MATCH_OPTION},
         {"ignore-case", no_argument, nullptr, IGNORE_CASE_OPTION},
         {"literal", no_argument, nullptr, LITERAL_OPTION},
@@ -594,7 +618,7 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
                 user_stats.ignore_case = true;
                 break;
             case 'h':
-                printHelp(argv[0]);
+                printHelp(argv[0], user_stats);
                 return {false, MGREP_EXIT_MATCH_FOUND, optind};
             case 'r':
                 user_stats.recursive_mode = true;
@@ -621,6 +645,9 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
                 user_stats.quiet = true;
                 break;
             case 'o':
+                user_stats.one_line = true;
+                break;
+            case 'O':
                 user_stats.only_matching = true;
                 break;
             case 't':
@@ -682,6 +709,9 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
             case ONLY_MATCHING_OPTION:
                 user_stats.only_matching = true;
                 break;
+            case ONE_LINE_OPTION:
+                user_stats.one_line = true;
+                break;
             case INVERT_MATCH_OPTION:
                 user_stats.invert_match = true;
                 break;
@@ -742,6 +772,17 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
         std::cerr << "ERROR: --only-matching cannot be used with --invert-match\n";
         return {false, MGREP_EXIT_ERROR, optind};
     }
+    if (user_stats.one_line && user_stats.only_matching) {
+        std::cerr << "ERROR: --one-line cannot be used with --only-matching\n";
+        return {false, MGREP_EXIT_ERROR, optind};
+    }
+    if (user_stats.one_line &&
+        (user_stats.print_before_source > 0 ||
+         user_stats.print_after_source > 0 ||
+         user_stats.heading)) {
+        std::cerr << "ERROR: --one-line cannot be used with context or --heading\n";
+        return {false, MGREP_EXIT_ERROR, optind};
+    }
     if (user_stats.list_files) {
         user_stats.pattern.clear();
         user_stats.folded_pattern.clear();
@@ -751,6 +792,10 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
             : decode_pattern_escapes(argv[optind]);
         if (user_stats.ignore_case) {
             user_stats.folded_pattern = fold_ascii_string(user_stats.pattern);
+        }
+        if (user_stats.one_line && user_stats.pattern.find('\n') != std::string::npos) {
+            std::cerr << "ERROR: --one-line cannot be used with a multiline pattern\n";
+            return {false, MGREP_EXIT_ERROR, optind};
         }
         ++optind;
     } else {

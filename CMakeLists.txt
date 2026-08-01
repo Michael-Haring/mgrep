@@ -62,6 +62,10 @@ install(TARGETS mgrep
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
+install(FILES docs/mgrep.1
+    DESTINATION ${CMAKE_INSTALL_MANDIR}/man1
+)
+
 if(MGREP_BUILD_TESTS)
     add_executable(tests
         testing/mgrep-cli-tests.cpp

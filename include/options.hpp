@@ -15,7 +15,8 @@ inline constexpr int MGREP_EXIT_ERROR = 2;
 struct InputOperand {
     enum class Kind {
         Path,
-        FileList
+        FileList,
+        Stdin
     };
 
     Kind kind = Kind::Path;
@@ -45,6 +46,7 @@ struct UserOptions {
     bool count_print = false;
     bool quiet = false;
     bool only_matching = false;
+    bool one_line = false;
     bool invert_match = false;
     bool ignore_case = false;
     bool heading = false;
@@ -60,7 +62,7 @@ struct ParseResult {
     int first_path_arg = 0;
 };
 
-void printHelp(char* file_name);
+void printHelp(const char* file_name, const UserOptions& user_stats);
 ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats);
 bool extension_filter_allows(std::string_view path, const UserOptions& user_stats);
 bool exclude_glob_matches_path(std::string_view path, const UserOptions& user_stats);

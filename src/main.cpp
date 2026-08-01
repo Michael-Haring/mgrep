@@ -128,14 +128,15 @@ int main(int argc, char* argv[])
 
     const bool has_file_list_input =
         !user_stats.file_lists.empty();
-    bool has_path_args = false;
+    bool has_input_operands = false;
     for (const auto& operand : user_stats.input_operands) {
-        if (operand.kind == InputOperand::Kind::Path) {
-            has_path_args = true;
+        if (operand.kind == InputOperand::Kind::Path ||
+            operand.kind == InputOperand::Kind::Stdin) {
+            has_input_operands = true;
             break;
         }
     }
-    if (!has_file_list_input && !has_path_args && !::isatty(STDIN_FILENO)) {
+    if (!has_file_list_input && !has_input_operands && !::isatty(STDIN_FILENO)) {
         search_stdin(user_stats);
 
         if (user_stats.is_verbose && !user_stats.quiet) {
@@ -198,7 +199,10 @@ int main(int argc, char* argv[])
             continue;
         }
 
-        if (operand.value == "-") {
+        if (operand.kind == InputOperand::Kind::Stdin) {
+            if (user_stats.list_files) {
+                continue;
+            }
             finish_pending_work();
             if (user_stats.quiet && matches > 0) {
                 break;

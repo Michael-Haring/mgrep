@@ -27,7 +27,7 @@ ThreadPool::ThreadPool()
 
 ThreadPool::ThreadPool(size_t num_threads)
 {
-
+    create_workers(num_threads);
 }
 
 ThreadPool::~ThreadPool()
@@ -56,6 +56,15 @@ size_t ThreadPool::create_workers()
 {
     size_t max_threads = static_cast<size_t>(std::thread::hardware_concurrency() * 0.75);
     if (max_threads <= 0) {
+        max_threads = 1;
+    }
+
+    return create_workers(max_threads);
+}
+
+size_t ThreadPool::create_workers(size_t max_threads)
+{
+    if (max_threads == 0) {
         max_threads = 1;
     }
 
@@ -152,6 +161,5 @@ size_t ThreadPool::count_tasks_completed()
     }
     return total_tasks_completed;
 }
-
 
 
