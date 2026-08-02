@@ -1106,6 +1106,7 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
                 append_one_line_source(
                     output,
                     &path,
+                    get_name_pos(),
                     match_line_num,
                     user_stats.line_number_print,
                     line_data,
@@ -2085,6 +2086,7 @@ size_t search_stdin(UserOptions& user_stats)
             append_one_line_source(
                 output,
                 nullptr,
+                0,
                 match_line_num,
                 user_stats.line_number_print,
                 line_data,

@@ -20,6 +20,7 @@ size_t decimal_digits(size_t value)
 size_t append_compact_path(
     std::string& output,
     const std::string& path,
+    size_t name_pos,
     size_t max_width,
     const ColorTheme& colors,
     bool cool_colors
@@ -27,18 +28,33 @@ size_t append_compact_path(
 {
     const bool clipped = path.size() > max_width;
     const size_t suffix_len = clipped && max_width > 1 ? max_width - 1 : max_width;
-    const char* suffix = path.data() + path.size() - suffix_len;
+    const size_t suffix_pos = path.size() - suffix_len;
 
-    if (cool_colors) {
-        output.append(colors.file);
+    if (!cool_colors) {
+        if (clipped && max_width > 0) {
+            output.append(ELLIPSIS);
+        }
+        output.append(path.data() + suffix_pos, suffix_len);
+        return clipped && max_width > 0 ? suffix_len + 1 : suffix_len;
     }
-    if (clipped && max_width > 0) {
-        output.append(ELLIPSIS);
-    }
-    output.append(suffix, suffix_len);
-    if (cool_colors) {
+
+    if (suffix_pos < name_pos) {
+        output.append(colors.path);
+        if (clipped && max_width > 0) {
+            output.append(ELLIPSIS);
+        }
+        output.append(path.data() + suffix_pos, name_pos - suffix_pos);
         output.append(RESET);
+        output.append(colors.file);
+        output.append(path.data() + name_pos, path.size() - name_pos);
+    } else {
+        output.append(colors.file);
+        if (clipped && max_width > 0) {
+            output.append(ELLIPSIS);
+        }
+        output.append(path.data() + suffix_pos, suffix_len);
     }
+    output.append(RESET);
     return clipped && max_width > 0 ? suffix_len + 1 : suffix_len;
 }
 
@@ -115,6 +131,7 @@ void append_highlighted_source(
 void append_one_line_source(
     std::string& output,
     const std::string* path,
+    size_t path_name_pos,
     size_t line_num,
     bool print_line_number,
     const char* line_data,
@@ -138,7 +155,9 @@ void append_one_line_source(
 
     size_t prefix_width = 0;
     if (path != nullptr) {
-        prefix_width += append_compact_path(output, *path, path_width, colors, cool_colors);
+        prefix_width += append_compact_path(
+            output, *path, path_name_pos, path_width, colors, cool_colors
+        );
         output.push_back(' ');
         ++prefix_width;
     }

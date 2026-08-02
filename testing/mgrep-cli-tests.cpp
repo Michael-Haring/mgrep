@@ -1870,6 +1870,26 @@ TEST_CASE("One-line file output includes path and optional line number")
         path.string() + " 4: needle again\n");
 }
 
+TEST_CASE("One-line output preserves theme path and filename colors")
+{
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "src" / "one.txt";
+
+    const std::string output = run_mgrep(
+        {"-orsl", "--theme", "gruvbox", "needle", fixture.root.string()},
+        nullptr,
+        test_home_without_ignore(),
+        false
+    );
+
+    const std::string directory = path.string().substr(0, path.string().find_last_of('/') + 1);
+    REQUIRE(output.find(
+        "\033[38;5;244m" + directory + "\033[0m" +
+        "\033[38;5;214mone.txt\033[0m " +
+        "\033[38;5;108m2: \033[0m"
+    ) != std::string::npos);
+}
+
 TEST_CASE("One-line output clips long records around the match")
 {
     CliFixture fixture;

@@ -24,6 +24,7 @@ void append_highlighted_source(
 void append_one_line_source(
     std::string& output,
     const std::string* path,
+    size_t path_name_pos,
     size_t line_num,
     bool print_line_number,
     const char* line_data,
