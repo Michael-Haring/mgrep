@@ -14,6 +14,7 @@ assertion that mgrep is a superior tool overall.
 ### Dependencies
 - CMake
 - C++ Compiler
+- RE2 development package (`libre2-dev` on Debian and Ubuntu)
 
 
 ```bash
@@ -51,7 +52,7 @@ programmers might find useful, or features that various versions of grep may hav
 The legendary getopt provides us with several options in this program
 1. -h / --help Prints help text, shows user options and how to use the program
 2. -v / --invert-match Prints lines that do not contain the pattern
-3. -i / --ignore-case Matches ASCII letters case-insensitively
+3. -i / --ignore-case Matches case-insensitively
 4. --verbose Enables verbose output, things like the total files searched and total matches found
 5. -r Enables recursive search mode, if a dir is found, mgrep will search that dir as well
 6. -p / --pretty Compatibility alias; colors are enabled by default.
@@ -63,15 +64,16 @@ The legendary getopt provides us with several options in this program
 12. --ext EXT[,EXT...] Only searches files with matching extensions. Example: --ext h,hpp
 13. --glob GLOB Only searches paths matching GLOB. Example: --glob 'include/**/*.hpp'
 14. --exclude-glob GLOB Skips paths matching GLOB. Example: --exclude-glob '*test*'
-15. --heading Groups line/source output under each matching file path.
+15. --heading Forces line/source output below one heading per file. Heading output is
+enabled automatically when stdout is a terminal and line-oriented output is requested.
 16. --files Lists files mgrep would search, without requiring a pattern.
 17. --ff FILE / --files-from FILE Reads newline-delimited input file paths from FILE
 18. --files-from0 FILE / --null-files-from FILE Reads NUL-delimited input file paths from FILE
 19. -t / --theme THEME Select a named color theme: blue, red, green, purple, cyan, yellow,
 orange, pink, mono, bright, gruvbox, nord, dracula, nebula.
 20. --no-color Disables ANSI color output.
-21. --literal Treats backslashes in the pattern literally. By default, pattern escapes
-like \n, \r, \t, \0, \\, and \xNN are decoded before searching.
+21. --literal Treats every pattern character literally. By default, patterns containing
+regex metacharacters use RE2 syntax; plain patterns retain the fast literal matcher.
 22. --colors COMPONENT:ATTR:VALUE Overrides colors. Example: --colors match:fg:magenta
 23. -n Adds an aditional newline between pattern finds. Default is 1 like grep
 24. -l Prints the line number of the file the pattern was found

@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.10)
 
 project(mgrep LANGUAGES CXX)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(RE2 REQUIRED IMPORTED_TARGET re2)
+
 include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -47,7 +50,7 @@ add_library(mgrep_library
     src/traversal.cpp
 )
 target_link_libraries(mgrep_library
-    PUBLIC mgrep_config
+    PUBLIC mgrep_config PkgConfig::RE2
 )
 
 add_executable(mgrep

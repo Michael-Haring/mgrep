@@ -125,6 +125,7 @@ int main(int argc, char* argv[])
     if (!parse_result.ok) {
         return parse_result.exit_code;
     }
+    apply_terminal_output_defaults(user_stats, ::isatty(STDOUT_FILENO));
 
     const bool has_file_list_input =
         !user_stats.file_lists.empty();

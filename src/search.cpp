@@ -10,6 +10,8 @@
 
 #include "output.hpp"
 
+#include <re2/re2.h>
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -46,17 +48,21 @@ enum class FastScanResult {
     Binary
 };
 
-inline char fold_ascii(char ch)
+inline char fold_case_byte(char ch)
 {
-    return ch >= 'A' && ch <= 'Z'
-        ? static_cast<char>(ch + ('a' - 'A'))
-        : ch;
+    const unsigned char byte = static_cast<unsigned char>(ch);
+    if ((byte >= 'A' && byte <= 'Z') ||
+        (byte >= 0xC0 && byte <= 0xD6) ||
+        (byte >= 0xD8 && byte <= 0xDE)) {
+        return static_cast<char>(byte + 0x20);
+    }
+    return ch;
 }
 
 bool folded_match_at(const char* data, const char* folded_pattern, size_t pattern_len)
 {
     for (size_t i = 1; i < pattern_len; ++i) {
-        if (fold_ascii(data[i]) != folded_pattern[i]) {
+        if (fold_case_byte(data[i]) != folded_pattern[i]) {
             return false;
         }
     }
@@ -80,7 +86,7 @@ const char* find_case_insensitive(
     const char first = folded_pattern[0];
     const size_t last_start = size - pattern_len;
     for (size_t pos = 0; pos <= last_start; ++pos) {
-        if (fold_ascii(data[pos]) == first &&
+        if (fold_case_byte(data[pos]) == first &&
             (pattern_len == 1 || folded_match_at(data + pos, folded_pattern, pattern_len))) {
             return data + pos;
         }
@@ -89,9 +95,30 @@ const char* find_case_insensitive(
     return nullptr;
 }
 
-const char* find_match(const char* data, size_t size, const UserOptions& user_stats)
+const char* find_match(
+    const char* data,
+    size_t size,
+    const UserOptions& user_stats,
+    size_t* match_len = nullptr
+)
 {
+    if (user_stats.regex_pattern) {
+        re2::StringPiece match;
+        const re2::StringPiece text(data, size);
+        if (!user_stats.compiled_regex->Match(
+                text, 0, size, re2::RE2::UNANCHORED, &match, 1)) {
+            return nullptr;
+        }
+        if (match_len != nullptr) {
+            *match_len = match.size();
+        }
+        return match.data();
+    }
+
     const size_t pattern_len = user_stats.pattern.size();
+    if (match_len != nullptr) {
+        *match_len = pattern_len;
+    }
     if (pattern_len == 0) {
         return data;
     }
@@ -1006,7 +1033,8 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
         const unsigned int after = user_stats.print_after_source;
         const std::string& pattern = user_stats.pattern;
         const size_t pattern_len = pattern.size();
-        const bool sparse_line_prefilter = before == 0 && after == 0 && !user_stats.invert_match;
+        const bool sparse_line_prefilter =
+            !user_stats.regex_pattern && before == 0 && after == 0 && !user_stats.invert_match;
         const bool hit_driven_line_scan =
             sparse_line_prefilter &&
             user_stats.max_lines == 0 &&
@@ -1022,6 +1050,14 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
             !user_stats.line_number_print &&
             before == 0 &&
             after == 0;
+        const bool regex_path_only =
+            user_stats.regex_pattern &&
+            !user_stats.invert_match &&
+            !user_stats.source_print &&
+            !user_stats.line_number_print &&
+            before == 0 &&
+            after == 0 &&
+            !user_stats.heading;
         const bool context_print = before > 0 || after > 0;
         const bool heading_mode =
             user_stats.heading &&
@@ -1075,6 +1111,10 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
             }
             pending_line.append(data, len);
 
+            if (user_stats.regex_pattern) {
+                return;
+            }
+
             if (pending_hit_offset != std::string::npos || pattern_len == 0) {
                 return;
             }
@@ -1095,7 +1135,8 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
             const char* line_data,
             size_t line_len,
             size_t match_line_num,
-            const char* hit
+            const char* hit,
+            size_t match_len
         ) {
             if (user_stats.quiet) {
                 ++local_matches;
@@ -1112,7 +1153,7 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
                     line_data,
                     line_len,
                     hit,
-                    pattern_len,
+                    match_len,
                     user_stats.colors,
                     user_stats.cool_colors
                 );
@@ -1139,6 +1180,19 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
                 return;
             }
 
+            if (regex_path_only) {
+                if (local_matches == 0) {
+                    if (user_stats.cool_colors) {
+                        append_colored_path(output, path, get_name_pos(), user_stats.colors);
+                    } else {
+                        append_plain_path(output, path, get_name_pos());
+                    }
+                    output.push_back('\n');
+                    local_matches = 1;
+                }
+                return;
+            }
+
             const bool emits_source = user_stats.source_print || context_print;
             if (!heading_mode &&
                 user_stats.all_files &&
@@ -1151,7 +1205,7 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
                     line_len,
                     match_line_num,
                     hit,
-                    pattern_len,
+                    match_len,
                     user_stats,
                     emits_source
                 )) {
@@ -1170,7 +1224,7 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
                             line_data,
                             line_len,
                             hit,
-                            pattern_len,
+                            match_len,
                             user_stats.colors
                         );
                     } else {
@@ -1204,7 +1258,7 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
                         line_data,
                         line_len,
                         hit,
-                        pattern_len,
+                        match_len,
                         user_stats.colors
                     );
                 } else if (user_stats.line_number_print) {
@@ -1236,7 +1290,12 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
             last_output_line_num = match_line_num;
         };
 
-        auto process_line_with_hit = [&](const char* line_data, size_t line_len, const char* hit) {
+        auto process_line_with_hit = [&] (
+            const char* line_data,
+            size_t line_len,
+            const char* hit,
+            size_t match_len
+        ) {
             ++line_num;
             const bool selected = user_stats.invert_match ? hit == nullptr : hit != nullptr;
 
@@ -1254,7 +1313,7 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
                     }
                 }
 
-                emit_match(line_data, line_len, line_num, hit);
+                emit_match(line_data, line_len, line_num, hit, match_len);
                 after_remaining = after;
                 if (user_stats.quiet && local_matches > 0) {
                     stop = true;
@@ -1282,26 +1341,33 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
 
         auto process_line = [&](const char* line_data, size_t line_len) {
             const char* hit = nullptr;
+            size_t match_len = pattern_len;
 
-            if (pattern_len == 0) {
+            if (user_stats.regex_pattern) {
+                hit = find_match(line_data, line_len, user_stats, &match_len);
+            } else if (pattern_len == 0) {
                 hit = line_data;
             } else if (line_len >= pattern_len) {
                 hit = find_match(line_data, line_len, user_stats);
             }
 
-            process_line_with_hit(line_data, line_len, hit);
+            process_line_with_hit(line_data, line_len, hit, match_len);
         };
 
         auto process_pending_line = [&]() {
             const char* hit = nullptr;
-            if (pattern_len == 0) {
+            size_t match_len = pattern_len;
+            if (user_stats.regex_pattern) {
+                hit = find_match(
+                    pending_line.data(), pending_line.size(), user_stats, &match_len);
+            } else if (pattern_len == 0) {
                 hit = pending_line.data();
             } else if (pending_hit_offset != std::string::npos &&
                        pending_hit_offset + pattern_len <= pending_line.size()) {
                 hit = pending_line.data() + pending_hit_offset;
             }
 
-            process_line_with_hit(pending_line.data(), pending_line.size(), hit);
+            process_line_with_hit(pending_line.data(), pending_line.size(), hit, match_len);
             pending_line.clear();
             pending_hit_offset = std::string::npos;
         };
@@ -1321,6 +1387,10 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
                 output.resize(output_start);
                 ::close(fd);
                 return 0;
+            }
+
+            if (regex_path_only && local_matches > 0) {
+                continue;
             }
 
             if (hit_driven_line_scan && pending_line.empty()) {
@@ -1363,7 +1433,13 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
 
                     const char* line_end = static_cast<const char*>(line_end_ptr);
                     if (current_line_start != last_emitted_line_start) {
-                        emit_match(current_line_start, line_end - current_line_start, line_num + 1, hit);
+                        emit_match(
+                            current_line_start,
+                            line_end - current_line_start,
+                            line_num + 1,
+                            hit,
+                            pattern_len
+                        );
                         last_emitted_line_start = current_line_start;
                     }
 
@@ -1428,6 +1504,10 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
                     process_pending_line();
                 } else {
                     process_line(line_start, line_end - line_start);
+                }
+
+                if (stop) {
+                    break;
                 }
 
                 if (user_stats.max_lines > 0 && line_num >= user_stats.max_lines) {
@@ -1658,6 +1738,10 @@ size_t read_file_only_matching(const std::string& path, UserOptions& user_stats,
 
 ReadFileFn choose_read_file(const UserOptions& user_stats)
 {
+    if (user_stats.regex_pattern) {
+        return read_file_line_options;
+    }
+
     if (pattern_has_newline(user_stats) &&
         !user_stats.invert_match &&
         (user_stats.count_print ||
@@ -1790,7 +1874,8 @@ size_t search_stdin(UserOptions& user_stats)
     const unsigned int after = user_stats.print_after_source;
     const std::string& pattern = user_stats.pattern;
     const size_t pattern_len = pattern.size();
-    const bool sparse_line_prefilter = before == 0 && after == 0 && !user_stats.invert_match;
+    const bool sparse_line_prefilter =
+        !user_stats.regex_pattern && before == 0 && after == 0 && !user_stats.invert_match;
     const bool hit_driven_line_scan =
         sparse_line_prefilter && user_stats.max_lines == 0 && !user_stats.invert_match;
 
@@ -2080,7 +2165,8 @@ size_t search_stdin(UserOptions& user_stats)
         const char* line_data,
         size_t line_len,
         size_t match_line_num,
-        const char* hit
+        const char* hit,
+        size_t match_len
     ) {
         if (user_stats.one_line) {
             append_one_line_source(
@@ -2092,7 +2178,7 @@ size_t search_stdin(UserOptions& user_stats)
                 line_data,
                 line_len,
                 hit,
-                pattern_len,
+                match_len,
                 user_stats.colors,
                 user_stats.cool_colors
             );
@@ -2122,7 +2208,7 @@ size_t search_stdin(UserOptions& user_stats)
                 line_data,
                 line_len,
                 hit,
-                pattern_len,
+                match_len,
                 user_stats.colors
             );
         } else {
@@ -2138,8 +2224,9 @@ size_t search_stdin(UserOptions& user_stats)
     auto process_line = [&](const char* line_data, size_t line_len) {
         ++line_num;
         const char* hit = nullptr;
+        size_t match_len = pattern_len;
 
-        hit = find_match(line_data, line_len, user_stats);
+        hit = find_match(line_data, line_len, user_stats, &match_len);
 
         const bool selected = user_stats.invert_match ? hit == nullptr : hit != nullptr;
 
@@ -2157,7 +2244,7 @@ size_t search_stdin(UserOptions& user_stats)
                 }
             }
 
-            emit_match(line_data, line_len, line_num, hit);
+            emit_match(line_data, line_len, line_num, hit, match_len);
             after_remaining = after;
         }
         else if (after_remaining > 0) {
@@ -2236,7 +2323,13 @@ size_t search_stdin(UserOptions& user_stats)
 
                 const char* line_end = static_cast<const char*>(line_end_ptr);
                 if (current_line_start != last_emitted_line_start) {
-                    emit_match(current_line_start, line_end - current_line_start, line_num + 1, hit);
+                    emit_match(
+                        current_line_start,
+                        line_end - current_line_start,
+                        line_num + 1,
+                        hit,
+                        pattern_len
+                    );
                     last_emitted_line_start = current_line_start;
                 }
 

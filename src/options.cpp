@@ -1,5 +1,7 @@
 #include "options.hpp"
 
+#include <re2/re2.h>
+
 #include <cerrno>
 #include <climits>
 #include <cstdint>
@@ -179,21 +181,110 @@ bool parse_max_lines_option(const char* value, unsigned int& output)
     return true;
 }
 
-char fold_ascii(char ch)
+char fold_case_byte(char ch)
 {
-    return ch >= 'A' && ch <= 'Z'
-        ? static_cast<char>(ch + ('a' - 'A'))
-        : ch;
+    const unsigned char byte = static_cast<unsigned char>(ch);
+    if ((byte >= 'A' && byte <= 'Z') ||
+        (byte >= 0xC0 && byte <= 0xD6) ||
+        (byte >= 0xD8 && byte <= 0xDE)) {
+        return static_cast<char>(byte + 0x20);
+    }
+    return ch;
 }
 
-std::string fold_ascii_string(const std::string& value)
+std::string fold_case_string(const std::string& value)
 {
     std::string folded;
     folded.resize(value.size());
     for (size_t i = 0; i < value.size(); ++i) {
-        folded[i] = fold_ascii(value[i]);
+        folded[i] = fold_case_byte(value[i]);
     }
     return folded;
+}
+
+bool pattern_uses_regex(std::string_view pattern)
+{
+    return pattern.find_first_of(R"(\.^$|()[]{}*+?)") != std::string_view::npos;
+}
+
+int hex_digit_value(char ch)
+{
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return ch - 'a' + 10;
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return ch - 'A' + 10;
+    }
+    return -1;
+}
+
+bool pattern_has_regex_newline(std::string_view pattern)
+{
+    if (pattern.find('\n') != std::string_view::npos) {
+        return true;
+    }
+    for (size_t i = 0; i + 1 < pattern.size(); ++i) {
+        if (pattern[i] != '\\') {
+            continue;
+        }
+        size_t slash_count = 1;
+        while (i + slash_count < pattern.size() && pattern[i + slash_count] == '\\') {
+            ++slash_count;
+        }
+        const size_t escape_pos = i + slash_count;
+        if ((slash_count & 1U) != 0 && escape_pos < pattern.size()) {
+            const char escaped = pattern[escape_pos];
+            if (escaped == 'n') {
+                return true;
+            }
+            if (escaped == 'x' && escape_pos + 1 < pattern.size()) {
+                size_t digit_pos = escape_pos + 1;
+                if (pattern[digit_pos] == '{') {
+                    ++digit_pos;
+                    unsigned int value = 0;
+                    bool has_digit = false;
+                    while (digit_pos < pattern.size() && pattern[digit_pos] != '}') {
+                        const int digit = hex_digit_value(pattern[digit_pos]);
+                        if (digit < 0) {
+                            break;
+                        }
+                        has_digit = true;
+                        value = value <= 0x10 ? (value << 4) | static_cast<unsigned int>(digit) : 0x11;
+                        ++digit_pos;
+                    }
+                    if (has_digit && digit_pos < pattern.size() && pattern[digit_pos] == '}' &&
+                        value == '\n') {
+                        return true;
+                    }
+                } else if (digit_pos + 1 < pattern.size()) {
+                    const int high = hex_digit_value(pattern[digit_pos]);
+                    const int low = hex_digit_value(pattern[digit_pos + 1]);
+                    if (high >= 0 && low >= 0 && ((high << 4) | low) == '\n') {
+                        return true;
+                    }
+                }
+            }
+            if (escaped >= '0' && escaped <= '7') {
+                unsigned int value = 0;
+                size_t digit_pos = escape_pos;
+                size_t digits = 0;
+                while (digit_pos < pattern.size() && digits < 3 &&
+                       pattern[digit_pos] >= '0' && pattern[digit_pos] <= '7') {
+                    value = (value << 3) | static_cast<unsigned int>(pattern[digit_pos] - '0');
+                    ++digit_pos;
+                    ++digits;
+                }
+                if (value == '\n') {
+                    return true;
+                }
+            }
+        }
+        i += slash_count - 1;
+    }
+    return false;
 }
 
 char lower_ascii(char ch)
@@ -443,74 +534,6 @@ bool exclude_glob_matches_directory(std::string_view path, const UserOptions& us
     return exclude_glob_matches_path(path_with_slash, user_stats);
 }
 
-bool is_hex_digit(char ch)
-{
-    return (ch >= '0' && ch <= '9') ||
-        (ch >= 'a' && ch <= 'f') ||
-        (ch >= 'A' && ch <= 'F');
-}
-
-unsigned char hex_value(char ch)
-{
-    if (ch >= '0' && ch <= '9') {
-        return static_cast<unsigned char>(ch - '0');
-    }
-    if (ch >= 'a' && ch <= 'f') {
-        return static_cast<unsigned char>(ch - 'a' + 10);
-    }
-    return static_cast<unsigned char>(ch - 'A' + 10);
-}
-
-std::string decode_pattern_escapes(const std::string& pattern)
-{
-    std::string decoded;
-    decoded.reserve(pattern.size());
-
-    for (size_t i = 0; i < pattern.size(); ++i) {
-        const char ch = pattern[i];
-        if (ch != '\\' || i + 1 >= pattern.size()) {
-            decoded.push_back(ch);
-            continue;
-        }
-
-        const char escaped = pattern[++i];
-        switch (escaped) {
-            case 'n':
-                decoded.push_back('\n');
-                break;
-            case 'r':
-                decoded.push_back('\r');
-                break;
-            case 't':
-                decoded.push_back('\t');
-                break;
-            case '0':
-                decoded.push_back('\0');
-                break;
-            case '\\':
-                decoded.push_back('\\');
-                break;
-            case 'x':
-                if (i + 2 < pattern.size() &&
-                    is_hex_digit(pattern[i + 1]) &&
-                    is_hex_digit(pattern[i + 2])) {
-                    decoded.push_back(static_cast<char>(
-                        (hex_value(pattern[i + 1]) << 4) | hex_value(pattern[i + 2])
-                    ));
-                    i += 2;
-                } else {
-                    decoded.push_back('x');
-                }
-                break;
-            default:
-                decoded.push_back(escaped);
-                break;
-        }
-    }
-
-    return decoded;
-}
-
 void printHelp(const char* file_name, const UserOptions& user_stats)
 {
     const std::string& accent = user_stats.cool_colors
@@ -521,7 +544,7 @@ void printHelp(const char* file_name, const UserOptions& user_stats)
         cout << "  " << accent << option << reset << "\n      " << description << "\n";
     };
 
-    cout << accent << "mgrep" << reset << " - fast fixed-string search\n\n";
+    cout << accent << "mgrep" << reset << " - fast literal and regex search\n\n";
     cout << "Usage:\n";
     cout << "  " << file_name << " [OPTIONS] PATTERN [PATH ...]\n";
     cout << "  " << file_name << " [OPTIONS] PATTERN -\n";
@@ -530,10 +553,10 @@ void printHelp(const char* file_name, const UserOptions& user_stats)
     cout << "Search options:\n";
     print_option("-h, --help", "Show this help and exit");
     print_option("-v, --invert-match", "Prints lines that do not contain the pattern");
-    print_option("-i, --ignore-case", "Matches ASCII letters case-insensitively");
+    print_option("-i, --ignore-case", "Matches case-insensitively");
     print_option("-r", "Recursively search directories");
     print_option("-m NUM", "Read at most NUM lines from each input");
-    print_option("--literal", "Treat backslashes in the pattern literally instead of decoding escapes");
+    print_option("--literal", "Treat every pattern character literally");
 
     cout << "\nOutput options:\n";
     print_option("-c, --count", "Prints matching line counts instead of normal matches");
@@ -545,7 +568,7 @@ void printHelp(const char* file_name, const UserOptions& user_stats)
     print_option("-B NUM", "Prints NUM lines before each matching line");
     print_option("-A NUM", "Prints NUM lines after each matching line");
     print_option("-n", "Prints an additional newline after each result");
-    print_option("--heading", "Groups line/source output under each matching file path");
+    print_option("--heading", "Force grouped output; enabled automatically on terminals");
     print_option("--verbose", "Prints completion and match statistics");
 
     cout << "\nInput and filtering options:\n";
@@ -787,13 +810,13 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
         user_stats.pattern.clear();
         user_stats.folded_pattern.clear();
     } else if (argv[optind]) {
-        user_stats.pattern = literal_pattern
-            ? std::string(argv[optind])
-            : decode_pattern_escapes(argv[optind]);
-        if (user_stats.ignore_case) {
-            user_stats.folded_pattern = fold_ascii_string(user_stats.pattern);
+        user_stats.pattern = std::string(argv[optind]);
+        user_stats.regex_pattern =
+            !literal_pattern && pattern_uses_regex(user_stats.pattern);
+        if (user_stats.ignore_case && !user_stats.regex_pattern) {
+            user_stats.folded_pattern = fold_case_string(user_stats.pattern);
         }
-        if (user_stats.one_line && user_stats.pattern.find('\n') != std::string::npos) {
+        if (user_stats.one_line && pattern_has_regex_newline(user_stats.pattern)) {
             std::cerr << "ERROR: --one-line cannot be used with a multiline pattern\n";
             return {false, MGREP_EXIT_ERROR, optind};
         }
@@ -803,10 +826,46 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
         return {false, MGREP_EXIT_ERROR, optind};
     }
 
+    if (user_stats.regex_pattern) {
+        if (user_stats.count_print || user_stats.only_matching || user_stats.one_line ||
+            user_stats.quiet || pattern_has_regex_newline(user_stats.pattern)) {
+            std::cerr << "ERROR: regex is currently supported only for line-oriented output; "
+                      << "use --literal or remove -c, -O, --one-line, --quiet, or multiline input\n";
+            return {false, MGREP_EXIT_ERROR, optind};
+        }
+
+        re2::RE2::Options regex_options;
+        regex_options.set_encoding(re2::RE2::Options::EncodingLatin1);
+        regex_options.set_case_sensitive(!user_stats.ignore_case);
+        regex_options.set_log_errors(false);
+        auto regex = std::make_shared<re2::RE2>(user_stats.pattern, regex_options);
+        if (!regex->ok()) {
+            std::cerr << "ERROR: invalid regex: " << regex->error() << "\n";
+            return {false, MGREP_EXIT_ERROR, optind};
+        }
+        user_stats.compiled_regex = std::move(regex);
+    }
+
     record_input_operands(original_args, user_stats);
     if (user_stats.list_files && user_stats.input_operands.empty()) {
         user_stats.input_operands.push_back({InputOperand::Kind::Path, ".", '\n'});
     }
 
     return {true, MGREP_EXIT_MATCH_FOUND, optind};
+}
+
+void apply_terminal_output_defaults(UserOptions& user_stats, bool stdout_is_terminal)
+{
+    const bool has_line_output =
+        user_stats.source_print ||
+        user_stats.line_number_print ||
+        user_stats.print_before_source > 0 ||
+        user_stats.print_after_source > 0;
+    if (stdout_is_terminal && has_line_output &&
+        !user_stats.count_print &&
+        !user_stats.quiet &&
+        !user_stats.only_matching &&
+        !user_stats.one_line) {
+        user_stats.heading = true;
+    }
 }

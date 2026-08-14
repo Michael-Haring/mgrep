@@ -1,6 +1,6 @@
 .TH MGREP 1 "August 2026" "mgrep" "User Commands"
 .SH NAME
-mgrep \- fast, multithreaded fixed-string search
+mgrep \- fast, multithreaded literal and regex search
 .SH SYNOPSIS
 .B mgrep
 .RI [ OPTIONS ] " PATTERN " [ PATH ...]
@@ -12,9 +12,9 @@ mgrep \- fast, multithreaded fixed-string search
 .RI [ "FILTER OPTIONS" ] " --files " [ PATH ...]
 .SH DESCRIPTION
 .B mgrep
-searches files or standard input for a fixed string.
-It is designed around fast file discovery, literal matching, and batched output.
-Matching is not regular-expression based.
+searches files or standard input for a literal or regular expression pattern.
+It is designed around fast file discovery, automatic literal fast paths, and
+batched output.
 .PP
 Without source or line-number output options, normal file searches print the path
 of each file containing a match. Options such as
@@ -33,22 +33,18 @@ standard input is searched at that point in the operand sequence. If no path is
 given and standard input is redirected, standard input is searched automatically.
 Multiple paths, file lists, and standard-input operands may be combined.
 .SH PATTERN
-Patterns are fixed strings. By default, mgrep decodes
-.BR \en ,
-.BR \er ,
-.BR \et ,
-.BR \e0 ,
-.BR \e\e ,
-and
-.BI \ex NN
-escapes before searching. Other escaped characters lose the backslash and are
-searched literally. Use
+Patterns use RE2's Perl-like regular expression syntax when they contain regex
+metacharacters. Plain patterns automatically retain the fast literal matcher. Use
 .B --literal
-to preserve backslashes exactly.
+to treat every pattern character literally.
 .PP
-Matching is byte-oriented. The
+Matching is byte-oriented and regex matching initially uses Latin-1 semantics. The
 .B --ignore-case
-option folds ASCII letters only.
+option enables case-insensitive matching.
+.PP
+Regex is currently limited to line-oriented output. Count, only-matching, one-line,
+quiet, and multiline regex searches report an error instead of silently changing
+their behavior.
 .SH SEARCH OPTIONS
 .TP
 .BR \-h ", " --help
@@ -59,7 +55,7 @@ Select lines that do not contain the pattern. This cannot be combined with
 .BR --only-matching .
 .TP
 .BR \-i ", " --ignore-case
-Match ASCII letters case-insensitively.
+Match case-insensitively.
 .TP
 .B \-r
 Recursively search below directory operands. Without this option, directory
@@ -71,7 +67,7 @@ Read at most
 lines from each input. A value of zero disables the limit.
 .TP
 .B --literal
-Treat every pattern backslash literally instead of decoding pattern escapes.
+Treat every pattern character literally.
 .SH OUTPUT OPTIONS
 .TP
 .BR \-c ", " --count
@@ -94,7 +90,7 @@ One-line mode cannot be combined with
 .BR \-A ,
 .BR --heading ,
 .BR --only-matching ,
-or a pattern containing a decoded newline.
+or a multiline pattern.
 .TP
 .BR \-O ", " --only-matching
 Print only the matching text, once per non-overlapping occurrence. File output
@@ -123,7 +119,9 @@ lines after each selected line.
 Print an additional newline after each result.
 .TP
 .B --heading
-Group line and source output below one heading for each matching file.
+Force line and source output below one heading for each matching file. This layout
+is enabled automatically when standard output is a terminal and source, line-number,
+or context output is requested.
 .TP
 .B --verbose
 Print completion and match statistics after searching. Quiet mode suppresses this

@@ -4,6 +4,7 @@
 #define CATCH_CONFIG_MAIN
 
 #include "catch.hpp"
+#include "options.hpp"
 #include "threads.hpp"
 
 #include <algorithm>
@@ -635,6 +636,23 @@ TEST_CASE("Fast file search skips binary-looking files with late NUL bytes")
     REQUIRE(output.empty());
 }
 
+TEST_CASE("Path-only regex skips binary-looking files with late NUL bytes")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path path = fixture.root / "late-regex-binary.txt";
+    std::string contents = "needle before binary marker\n";
+    contents.append(140 * 1024, 'x');
+    contents.push_back('\0');
+    contents += "binary tail\n";
+    write_file(path, contents);
+
+    const std::string output = run_mgrep({"needle|absent", path.string()}, &exit_code);
+
+    REQUIRE(output.empty());
+    REQUIRE(exit_code == 1);
+}
+
 TEST_CASE("Huge source file output is not emitted before late NUL detection")
 {
     CliFixture fixture;
@@ -868,6 +886,39 @@ TEST_CASE("Heading mode groups source matches by file")
         "needle again\n";
 
     REQUIRE(output == expected);
+}
+
+TEST_CASE("Terminal source and line-number output enables headings automatically")
+{
+    UserOptions options;
+    options.source_print = true;
+    options.line_number_print = true;
+
+    apply_terminal_output_defaults(options, true);
+
+    REQUIRE(options.heading);
+}
+
+TEST_CASE("Piped output does not enable headings automatically")
+{
+    UserOptions options;
+    options.source_print = true;
+    options.line_number_print = true;
+
+    apply_terminal_output_defaults(options, false);
+
+    REQUIRE_FALSE(options.heading);
+}
+
+TEST_CASE("Terminal defaults preserve incompatible output modes")
+{
+    UserOptions options;
+    options.source_print = true;
+    options.one_line = true;
+
+    apply_terminal_output_defaults(options, true);
+
+    REQUIRE_FALSE(options.heading);
 }
 
 TEST_CASE("Heading mode prints line numbers under the file heading")
@@ -2704,28 +2755,147 @@ TEST_CASE("Directory traversal searches symlinks to regular files")
     REQUIRE(output.find(display_path(target)) == std::string::npos);
 }
 
-TEST_CASE("Patterns are treated as fixed strings, not regular expressions")
+TEST_CASE("Literal mode treats regex metacharacters as fixed strings")
 {
     CliFixture fixture;
 
-    const std::string output = run_mgrep({"-rls", "int main(", fixture.root.string()});
+    const std::string output = run_mgrep({
+        "--literal", "-rls", "int main(", fixture.root.string()
+    });
 
     REQUIRE(output.find(display_path(fixture.root / "src" / "regex_chars.txt")) != std::string::npos);
     REQUIRE(output.find("1:\tliteral int main( should match") != std::string::npos);
 }
 
-TEST_CASE("Pattern backslash escapes are decoded by default")
+TEST_CASE("Regex alternation selects matching lines with line numbers")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nbeta\ngamma\n",
+        {"-l", "alpha|gamma"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "1:\talpha\n3:\tgamma\n");
+}
+
+TEST_CASE("Path-only regex output reports a matching file once")
+{
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "regex-path-only.txt";
+    write_file(path, "alpha\nbeta\nalpha again\n");
+
+    const std::string output = run_mgrep({"alpha|beta", path.string()});
+
+    REQUIRE(output == display_path(path) + "\n");
+}
+
+TEST_CASE("Case-insensitive option applies to regex matching")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "ALPHA\nbeta\n",
+        {"-i", "alpha|BETA"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "ALPHA\nbeta\n");
+}
+
+TEST_CASE("Latin-1 ignore-case agrees between literal and regex paths")
+{
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "latin1-case.txt";
+    const std::string upper(1, static_cast<char>(0xC4));
+    const std::string lower(1, static_cast<char>(0xE4));
+    write_file(path, lower + " lower\n" + upper + " upper\n");
+
+    const std::string literal_output = run_mgrep({"-ais", upper, path.string()});
+    const std::string regex_output = run_mgrep({"-ais", "(?:" + upper + ")", path.string()});
+
+    REQUIRE(literal_output == regex_output);
+    REQUIRE(literal_output.find(lower + " lower\n") != std::string::npos);
+    REQUIRE(literal_output.find(upper + " upper\n") != std::string::npos);
+}
+
+TEST_CASE("Literal mode searches for a literal alternation operator")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nbeta\nalpha|beta\n",
+        {"--literal", "alpha|beta"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "alpha|beta\n");
+}
+
+TEST_CASE("Invalid regular expressions return the search error status")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\n",
+        {"[alpha"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: invalid regex:") != std::string::npos);
+}
+
+TEST_CASE("Regex rejects output modes that are not implemented yet")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nbeta\n",
+        {"-c", "alpha|beta"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: regex is currently supported only for line-oriented output") !=
+            std::string::npos);
+}
+
+TEST_CASE("Regex newline patterns are rejected until multiline regex is supported")
 {
     int exit_code = -1;
 
     const std::string output = run_mgrep_with_stdin(
         "alpha\nbeta\n",
-        {"-q", "alpha\\nbeta"},
+        {"alpha\\nbeta"},
         &exit_code
     );
 
-    REQUIRE(output.empty());
-    REQUIRE(exit_code == 0);
+    REQUIRE(output.find("ERROR: regex is currently supported only for line-oriented output") !=
+            std::string::npos);
+    REQUIRE(exit_code == 2);
+}
+
+TEST_CASE("Encoded regex newlines are rejected until multiline regex is supported")
+{
+    const std::array<std::string, 4> patterns = {
+        "alpha\\x0Abeta",
+        "alpha\\x{0a}beta",
+        "alpha\\012beta",
+        "alpha[\\x0A]beta"
+    };
+
+    for (const auto& pattern : patterns) {
+        int exit_code = -1;
+        const std::string output = run_mgrep_with_stdin(
+            "alpha\nbeta\n",
+            {pattern},
+            &exit_code
+        );
+
+        REQUIRE(exit_code == 2);
+        REQUIRE(output.find("ERROR: regex is currently supported only for line-oriented output") !=
+                std::string::npos);
+    }
 }
 
 TEST_CASE("Newline pattern count mode matches across lines")
@@ -2738,7 +2908,8 @@ TEST_CASE("Newline pattern count mode matches across lines")
     const std::string output = run_mgrep({
         "--no-color",
         "-c",
-        "alpha\\nbeta",
+        "--literal",
+        "alpha\nbeta",
         path.string()
     }, &exit_code);
 
@@ -2756,7 +2927,8 @@ TEST_CASE("Newline pattern source mode prints full matching span")
     const std::string output = run_mgrep({
         "--no-color",
         "-s",
-        "alpha\\nbeta",
+        "--literal",
+        "alpha\nbeta",
         path.string()
     }, &exit_code);
 
@@ -2770,7 +2942,7 @@ TEST_CASE("Newline pattern only-matching mode prints the decoded match")
 
     const std::string output = run_mgrep_with_stdin(
         "alpha\nbeta\ngamma\n",
-        {"--no-color", "-O", "alpha\\nbeta"},
+        {"--no-color", "--literal", "-O", "alpha\nbeta"},
         &exit_code
     );
 
@@ -2788,7 +2960,8 @@ TEST_CASE("Newline pattern path-only mode honors max-lines")
     std::string output = run_mgrep({
         "--no-color",
         "-m", "2",
-        "alpha\\nbeta",
+        "--literal",
+        "alpha\nbeta",
         path.string()
     }, &exit_code);
     REQUIRE(exit_code == 0);
@@ -2797,7 +2970,8 @@ TEST_CASE("Newline pattern path-only mode honors max-lines")
     output = run_mgrep({
         "--no-color",
         "-m", "1",
-        "alpha\\nbeta",
+        "--literal",
+        "alpha\nbeta",
         path.string()
     }, &exit_code);
     REQUIRE(exit_code == 1);
@@ -2810,7 +2984,7 @@ TEST_CASE("Newline pattern quiet stdin mode honors max-lines")
 
     std::string output = run_mgrep_with_stdin(
         "alpha\nbeta\ngamma\n",
-        {"--no-color", "-q", "-m", "2", "alpha\\nbeta"},
+        {"--no-color", "--literal", "-q", "-m", "2", "alpha\nbeta"},
         &exit_code
     );
     REQUIRE(exit_code == 0);
@@ -2818,7 +2992,7 @@ TEST_CASE("Newline pattern quiet stdin mode honors max-lines")
 
     output = run_mgrep_with_stdin(
         "alpha\nbeta\ngamma\n",
-        {"--no-color", "-q", "-m", "1", "alpha\\nbeta"},
+        {"--no-color", "--literal", "-q", "-m", "1", "alpha\nbeta"},
         &exit_code
     );
     REQUIRE(exit_code == 1);
@@ -2835,7 +3009,8 @@ TEST_CASE("Newline pattern file context includes surrounding lines")
         "--no-color",
         "-B", "1",
         "-A", "1",
-        "alpha\\nbeta",
+        "--literal",
+        "alpha\nbeta",
         path.string()
     });
 
@@ -2850,7 +3025,7 @@ TEST_CASE("Newline pattern stdin context includes surrounding lines")
 {
     const std::string output = run_mgrep_with_stdin(
         "before\nalpha\nbeta\nafter\n",
-        {"--no-color", "-B", "1", "-A", "1", "alpha\\nbeta"}
+        {"--no-color", "--literal", "-B", "1", "-A", "1", "alpha\nbeta"}
     );
 
     REQUIRE(output == "before\nalpha\nbeta\nafter\n");
@@ -2866,7 +3041,8 @@ TEST_CASE("Overlapping newline pattern context does not duplicate shared lines")
         "--no-color",
         "-B", "1",
         "-A", "1",
-        "alpha\\nbeta",
+        "--literal",
+        "alpha\nbeta",
         path.string()
     });
 
@@ -2888,7 +3064,8 @@ TEST_CASE("Overlapping newline-only source matches do not duplicate shared lines
     const std::string output = run_mgrep({
         "--no-color",
         "-s",
-        "\\n",
+        "--literal",
+        "\n",
         path.string()
     });
 
@@ -2898,17 +3075,17 @@ TEST_CASE("Overlapping newline-only source matches do not duplicate shared lines
     REQUIRE(output == expected);
 }
 
-TEST_CASE("Escaped punctuation remains fixed-string matching")
+TEST_CASE("Regex escapes match punctuation literally")
 {
     int exit_code = -1;
 
     const std::string output = run_mgrep_with_stdin(
         "literal int main( should match\n",
-        {"-q", "int main\\("},
+        {"int main\\("},
         &exit_code
     );
 
-    REQUIRE(output.empty());
+    REQUIRE(output == "literal int main( should match\n");
     REQUIRE(exit_code == 0);
 }
 
@@ -2918,11 +3095,11 @@ TEST_CASE("Double backslash searches for a literal backslash")
 
     const std::string output = run_mgrep_with_stdin(
         "alpha\\nbeta\n",
-        {"-q", "alpha\\\\nbeta"},
+        {"alpha\\\\nbeta"},
         &exit_code
     );
 
-    REQUIRE(output.empty());
+    REQUIRE(output == "alpha\\nbeta\n");
     REQUIRE(exit_code == 0);
 }
 
@@ -2947,32 +3124,32 @@ TEST_CASE("Literal option disables pattern escape decoding")
     REQUIRE(exit_code == 0);
 }
 
-TEST_CASE("Hex pattern escapes are decoded by default")
+TEST_CASE("Regex hex escapes are interpreted by RE2")
 {
     int exit_code = -1;
 
     const std::string output = run_mgrep_with_stdin(
         "hex: A\n",
-        {"-q", "hex: \\x41"},
+        {"hex: \\x41"},
         &exit_code
     );
 
-    REQUIRE(output.empty());
+    REQUIRE(output == "hex: A\n");
     REQUIRE(exit_code == 0);
 }
 
-TEST_CASE("NUL pattern escape is decoded by default")
+TEST_CASE("RE2 NUL escape is accepted as a regex pattern")
 {
     int exit_code = -1;
 
     const std::string output = run_mgrep_with_stdin(
-        std::string("alpha\0beta\n", 11),
-        {"-qa", "alpha\\0beta"},
+        "alpha beta\n",
+        {"-a", "alpha\\0beta"},
         &exit_code
     );
 
     REQUIRE(output.empty());
-    REQUIRE(exit_code == 0);
+    REQUIRE(exit_code == 1);
 }
 
 TEST_CASE("Files without a trailing newline still report source matches")
