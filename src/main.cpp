@@ -68,6 +68,7 @@ bool add_explicit_file(const std::string& path, SearchWork& work)
 
 bool process_file_list_stream(
     std::istream& input,
+    const std::string& source,
     char delimiter,
     SearchWork& work,
     const std::function<bool()>& stop_after_add
@@ -92,6 +93,10 @@ bool process_file_list_stream(
         }
     }
 
+    if (input.bad()) {
+        std::cerr << "ERROR: could not read file list: " << source << "\n";
+        return false;
+    }
     return !had_error;
 }
 
@@ -103,7 +108,8 @@ bool process_file_list(
 )
 {
     if (list_path == "-") {
-        return process_file_list_stream(std::cin, delimiter, work, stop_after_add);
+        return process_file_list_stream(
+            std::cin, "stdin", delimiter, work, stop_after_add);
     }
 
     std::ifstream input(list_path, std::ios::binary);
@@ -112,7 +118,7 @@ bool process_file_list(
         return false;
     }
 
-    return process_file_list_stream(input, delimiter, work, stop_after_add);
+    return process_file_list_stream(input, list_path, delimiter, work, stop_after_add);
 }
 
 int main(int argc, char* argv[])
@@ -138,12 +144,20 @@ int main(int argc, char* argv[])
         }
     }
     if (!has_file_list_input && !has_input_operands && !::isatty(STDIN_FILENO)) {
+        if (user_stats.null_output) {
+            std::cerr << "ERROR: --null cannot be used when searching standard input\n";
+            return MGREP_EXIT_ERROR;
+        }
         search_stdin(user_stats);
 
         if (user_stats.is_verbose && !user_stats.quiet) {
             cout << "Completed 1 stdin read and found " << matches << " matches\n";
         }
 
+        if (search_error.load(std::memory_order_relaxed) &&
+            !(user_stats.quiet && matches > 0)) {
+            return MGREP_EXIT_ERROR;
+        }
         return exit_code_from_matches();
     }
 
@@ -230,11 +244,15 @@ int main(int argc, char* argv[])
                         work.small_paths.push_back(root.string());
                     }
                 }
-            } else {
+            } else if (std::filesystem::is_directory(root, ec)) {
                 if (has_pending_work()) {
                     finish_pending_work();
                 }
                 collect_search_files(root.string(), work);
+            } else {
+                std::cerr << "ERROR: path is not a regular file or directory: "
+                          << root.string() << "\n";
+                had_error = true;
             }
         } else {
             had_error = true;
@@ -247,7 +265,8 @@ int main(int argc, char* argv[])
         cout << "Completed " << completed_batches << " batches and found " << matches << " matches\n";
     }
 
-    if (had_error && !(user_stats.quiet && matches > 0)) {
+    if ((had_error || search_error.load(std::memory_order_relaxed)) &&
+        !(user_stats.quiet && matches > 0)) {
         return MGREP_EXIT_ERROR;
     }
 

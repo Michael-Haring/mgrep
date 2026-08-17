@@ -2,6 +2,7 @@
 
 #include "options.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -9,6 +10,7 @@
 inline constexpr size_t OUTPUT_FLUSH_SIZE = 1024 * 1024;
 
 extern size_t matches;
+extern std::atomic<bool> search_error;
 
 using ReadFileFn = size_t (*)(const std::string&, UserOptions&, std::string&);
 

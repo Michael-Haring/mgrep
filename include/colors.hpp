@@ -31,6 +31,7 @@ inline constexpr const char* LINE_YELLOW = "\033[38;5;178m";
 inline constexpr const char* LINE_ORANGE = "\033[38;5;172m";
 inline constexpr const char* LINE_PINK = "\033[38;5;176m";
 inline constexpr const char* LINE_WHITE = "\033[38;5;250m";
+inline constexpr const char* SOURCE_GREY = "\033[38;5;248m";
 inline constexpr const char* FILE_GRUVBOX = "\033[38;5;214m";
 inline constexpr const char* LINE_GRUVBOX = "\033[38;5;108m";
 inline constexpr const char* MATCH_GRUVBOX = "\033[38;5;208m";
@@ -50,8 +51,9 @@ struct ColorTheme {
     std::string file = FILE_BLUE;
     std::string line = LINE_TEAL;
     std::string match = MATCH_BLUE;
-    std::string source = "";
+    std::string source = SOURCE_GREY;
 };
 
 bool parse_color_theme(std::string_view name, ColorTheme& colors);
 bool parse_color_override(std::string_view spec, ColorTheme& colors);
+void print_theme_previews(bool cool_colors);

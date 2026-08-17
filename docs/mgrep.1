@@ -10,6 +10,12 @@ mgrep \- fast, multithreaded literal and regex search
 .br
 .B mgrep
 .RI [ "FILTER OPTIONS" ] " --files " [ PATH ...]
+.br
+.B mgrep
+.RI [ "FILTER OPTIONS" ] " --file NAME " [ PATH ...]
+.br
+.B mgrep
+.RI [ --no-color ] " --themes"
 .SH DESCRIPTION
 .B mgrep
 searches files or standard input for a literal or regular expression pattern.
@@ -33,8 +39,8 @@ standard input is searched at that point in the operand sequence. If no path is
 given and standard input is redirected, standard input is searched automatically.
 Multiple paths, file lists, and standard-input operands may be combined.
 .SH PATTERN
-Patterns use RE2's Perl-like regular expression syntax when they contain regex
-metacharacters. Plain patterns automatically retain the fast literal matcher. Use
+Patterns use RE2's Perl-like regular expression syntax by default. Plain patterns
+are detected automatically and retain the fast literal matcher. Use
 .B --literal
 to treat every pattern character literally.
 .PP
@@ -42,9 +48,353 @@ Matching is byte-oriented and regex matching initially uses Latin-1 semantics. T
 .B --ignore-case
 option enables case-insensitive matching.
 .PP
-Regex is currently limited to line-oriented output. Count, only-matching, one-line,
-quiet, and multiline regex searches report an error instead of silently changing
-their behavior.
+Regex works with count, quiet, only-matching, source, line-number, context, and
+path-only output. One-line and multiline regex searches currently report an error
+instead of silently changing their behavior.
+.SH REGULAR EXPRESSION REFERENCE
+The following is a quick reference for the RE2 syntax accepted by mgrep. Shells
+also interpret characters such as
+.BR * ,
+.BR ? ,
+.BR $ ,
+backslash, and parentheses, so patterns should normally be enclosed in single
+quotes.
+.SS Ordinary characters and quoting
+Most characters match themselves. These characters have special meaning in a
+regular expression:
+.PP
+.RS
+.B "\e . ^ $ | ( ) [ ] { } * + ?"
+.RE
+.PP
+Precede a metacharacter with a backslash to match it literally, for example
+.B \e.
+to match a period or
+.B \e\e
+to match a backslash.
+.B \eQ...\eE
+quotes all text between
+.B \eQ
+and
+.BR \eE .
+The
+.B --literal
+option instead treats the entire pattern as literal text.
+.SS Concatenation and alternatives
+.TP
+.B xy
+Match
+.I x
+followed by
+.IR y .
+.TP
+.B x|y
+Match either
+.I x
+or
+.IR y .
+Alternatives are tried from left to right. Concatenation binds more tightly than
+alternation, so
+.B 'cat|dog'
+matches either word.
+.SS Repetition
+The repetition operators apply to the expression immediately before them.
+.TP
+.B x*
+Match zero or more
+.IR x .
+.TP
+.B x+
+Match one or more
+.IR x .
+.TP
+.B x?
+Match zero or one
+.IR x .
+.TP
+.BI x{ n }
+Match exactly
+.I n
+copies of
+.IR x .
+.TP
+.BI x{ n ,}
+Match at least
+.I n
+copies.
+.TP
+.BI x{ n , m }
+Match from
+.I n
+through
+.I m
+copies. RE2 rejects repetition counts greater than 1000.
+.PP
+Repetitions are greedy by default: they prefer the longest match. Append
+.B ?
+to prefer the shortest match:
+.BR *? ,
+.BR +? ,
+.BR ?? ,
+.BR {n}? ,
+.BR {n,}? ,
+and
+.BR {n,m}? .
+The
+.B U
+flag reverses greediness. Possessive repetitions such as
+.B *+
+are not supported.
+.SS Groups and flags
+.TP
+.B (re)
+Numbered capturing group. Groups are numbered by opening parenthesis, beginning
+with 1; group 0 means the entire match.
+.TP
+.B (?:re)
+Non-capturing group.
+.TP
+.B (?P<name>re)
+Named capturing group. The alternate spelling
+.B (?<name>re)
+is not accepted by the RE2 version used by mgrep.
+.TP
+.B (?imsU)
+Set flags for the remainder of the current group.
+.TP
+.B (?imsU:re)
+Set flags only while matching
+.IR re .
+Place
+.B -
+before flags to clear them, as in
+.B (?i-s:re)
+or
+.BR (?-i) .
+.PP
+The flags are
+.B i
+for case-insensitive matching,
+.B m
+for multi-line anchors,
+.B s
+to let dot match newline, and
+.B U
+to make repetition ungreedy. A pattern that can match a newline is currently
+rejected by mgrep even though RE2 recognizes the syntax.
+.SS Any character and character classes
+.TP
+.B .
+Match any character except newline. With flag
+.BR s ,
+dot also matches newline.
+.TP
+.B [xyz]
+Match one listed character.
+.TP
+.B [^xyz]
+Match one character not listed.
+.TP
+.B [a-z]
+Match one character in the inclusive range from
+.B a
+through
+.BR z .
+.PP
+Items can be combined inside a class, as in
+.BR [A-Za-z0-9_] .
+Inside a class,
+.B ^
+is special only at the beginning,
+.B -
+denotes a range, and
+.B ]
+ends the class; escape these characters when they are meant literally. Character
+class intersection and subtraction are not supported.
+.SS Perl character classes
+.TP
+.B \ed
+ASCII digit:
+.BR [0-9] .
+.TP
+.B \eD
+Any character other than an ASCII digit.
+.TP
+.B \es
+ASCII whitespace:
+.BR [\et\en\ef\er\ ] .
+.TP
+.B \eS
+Any character other than ASCII whitespace.
+.TP
+.B \ew
+ASCII word character:
+.BR [0-9A-Za-z_] .
+.TP
+.B \eW
+Any character other than an ASCII word character.
+.PP
+These escapes can also be used inside bracketed character classes.
+.SS Unicode character classes
+.TP
+.BI \ep{ name }
+Match a character in the named Unicode general category or script, for example
+.BR \epL ,
+.BR \ep{Greek} ,
+or
+.BR \ep{Han} .
+.TP
+.BI \eP{ name }
+Match a character not in the named Unicode category or script.
+.PP
+The braces may be omitted for a one-letter Unicode category, as in
+.BR \epL .
+These escapes are also accepted inside bracketed character classes. Because
+mgrep configures RE2 for Latin-1 byte-oriented matching, only characters
+representable in that mode can match; the ASCII classes are usually clearer for
+byte searches.
+.SS ASCII character classes
+The following named classes can be used inside brackets. Their negated forms use
+.B ^
+after the first colon, for example
+.BR [[:^digit:]] .
+.TP
+.B [[:alnum:]]
+.BR [0-9A-Za-z]
+.TP
+.B [[:alpha:]]
+.BR [A-Za-z]
+.TP
+.B [[:ascii:]]
+.BR [\ex00-\ex7F]
+.TP
+.B [[:blank:]]
+Space or tab.
+.TP
+.B [[:cntrl:]]
+.BR [\ex00-\ex1F\ex7F]
+.TP
+.B [[:digit:]]
+.BR [0-9]
+.TP
+.B [[:graph:]]
+Visible characters from
+.B !
+through
+.BR ~ .
+.TP
+.B [[:lower:]]
+.BR [a-z]
+.TP
+.B [[:print:]]
+ASCII space through
+.BR ~ .
+.TP
+.B [[:punct:]]
+ASCII punctuation characters.
+.TP
+.B [[:space:]]
+.BR [\et\en\ev\ef\er\ ]
+.TP
+.B [[:upper:]]
+.BR [A-Z]
+.TP
+.B [[:word:]]
+.BR [0-9A-Za-z_]
+.TP
+.B [[:xdigit:]]
+.BR [0-9A-Fa-f]
+.SS Anchors and empty matches
+.TP
+.B ^
+Match at the beginning of text, or the beginning of a line with flag
+.BR m .
+.TP
+.B $
+Match at the end of text, like
+.BR \ez ,
+or before a newline at the end of text with flag
+.BR m .
+.TP
+.B \eA
+Match only at the beginning of text.
+.TP
+.B \ez
+Match only at the end of text.
+.TP
+.B \eb
+Match an ASCII word boundary: one side is an ASCII
+.B \ew
+character and the other is not.
+.TP
+.B \eB
+Match where there is no ASCII word boundary.
+.PP
+.BR \eZ ,
+.BR \eG ,
+and
+.B \eK
+are not supported.
+.SS Escape sequences
+.TP
+.B \ea
+Bell, byte 0x07.
+.TP
+.B \ef
+Form feed, byte 0x0C.
+.TP
+.B \et
+Horizontal tab, byte 0x09.
+.TP
+.B \en
+Newline, byte 0x0A. Patterns containing newline escapes are currently rejected
+by mgrep.
+.TP
+.B \er
+Carriage return, byte 0x0D.
+.TP
+.B \ev
+Vertical tab, byte 0x0B.
+.TP
+.B \e123
+The byte specified by up to three octal digits.
+.TP
+.B \ex7F
+The byte specified by two hexadecimal digits.
+.TP
+.B \ex{7F}
+The character specified by hexadecimal digits. In mgrep's Latin-1 regex mode,
+the value must fit in one byte, from 00 through FF.
+.TP
+.B \eC
+Match one byte, including a byte that is part of an encoded character.
+.PP
+Escaping a punctuation character quotes that character. C escapes such as
+.B \eb
+for backspace are not generally accepted when the same spelling is a regex
+operator; use an octal or hexadecimal escape when necessary.
+.SS Unsupported Perl-style constructs
+RE2 guarantees linear-time matching by omitting constructs that require
+backtracking or access to previously matched text. Consequently mgrep does not
+support backreferences such as
+.B \e1
+or
+.BR \ek<name> ;
+lookahead or lookbehind such as
+.BR (?=re) ,
+.BR (?!re) ,
+.BR (?<=re) ,
+or
+.BR (?<!re) ;
+atomic groups
+.BR (?>re) ;
+conditionals;
+recursion;
+subroutine calls;
+branch-reset groups;
+or embedded code. Perl extended-mode comments and whitespace with
+.B (?x)
+are also unsupported.
 .SH SEARCH OPTIONS
 .TP
 .BR \-h ", " --help
@@ -65,6 +415,14 @@ handling is limited to the requested directory level.
 Read at most
 .I NUM
 lines from each input. A value of zero disables the limit.
+.TP
+.BI --max-depth " NUM"
+Descend at most
+.I NUM
+path levels below each explicit directory operand and enable recursive search.
+The directory operand itself is depth zero, files directly inside it are depth
+one, and a value of zero prevents directory descent while still permitting
+explicit file operands.
 .TP
 .B --literal
 Treat every pattern character literally.
@@ -126,6 +484,15 @@ or context output is requested.
 .B --verbose
 Print completion and match statistics after searching. Quiet mode suppresses this
 summary.
+.TP
+.B --null
+Terminate path-only output records with a NUL byte instead of a newline. This also
+applies to
+.B --files
+output and makes paths containing newlines unambiguous. It cannot be combined with
+line-oriented or verbose output, or with a standard-input search. Use
+.B --no-color
+when passing the resulting paths to another program.
 .SH INPUT AND FILTER OPTIONS
 .TP
 .B \-a
@@ -136,6 +503,14 @@ rules and extension-based skips. It may substantially increase work.
 List the files mgrep would search instead of searching their contents. No pattern
 is required. With no path operand, this mode recursively lists from the current
 directory.
+.TP
+.BI --file " NAME"
+Recursively find files whose basename exactly equals
+.IR NAME .
+No search pattern is required, wildcard characters are treated literally, and the
+option may be repeated to select multiple names. With no path operand, search from
+the current directory. Exact-name selectors combine with type, extension, glob,
+depth, exclusion, and NUL-output options.
 .TP
 .BR --ff " " FILE ", " --files-from " " FILE
 Read newline-delimited input paths from
@@ -166,6 +541,9 @@ dot is optional.
 .BI --glob " GLOB"
 Search only paths matching
 .IR GLOB .
+Use this when a name or path is only partially known; use
+.B --file
+for a known exact basename.
 The matcher supports
 .BR * ,
 .BR ? ,
@@ -181,6 +559,8 @@ May be specified more than once.
 .B --
 End option parsing. This permits patterns or paths beginning with a hyphen.
 .SH APPEARANCE OPTIONS
+Built-in themes render non-matching source text in subdued ANSI color 248 so
+highlighted matches remain prominent.
 .TP
 .BR \-p ", " --pretty
 Compatibility alias. ANSI colors are enabled by default.
@@ -202,6 +582,12 @@ Select a color theme. Supported themes are
 .BR dracula ,
 and
 .BR nebula .
+.TP
+.B --themes
+Print a compact fake search result in every built-in theme and exit successfully.
+No pattern or path is required. Use
+.B --no-color
+to print the previews without ANSI control sequences.
 .TP
 .B --no-color
 Disable ANSI color output, including concise help when specified before
@@ -335,6 +721,20 @@ List C and C++ source files mgrep would search:
 .PP
 .RS
 .B mgrep --files --type source .
+.RE
+.PP
+Find every file named
+.I main.cpp
+below the current directory:
+.PP
+.RS
+.B mgrep --file main.cpp .
+.RE
+.PP
+Safely pass matching paths to another command:
+.PP
+.RS
+.B "mgrep --no-color --null -r needle . | xargs -0 command"
 .RE
 .SH FILES
 .TP

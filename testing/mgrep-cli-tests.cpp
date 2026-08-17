@@ -15,6 +15,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -67,8 +68,9 @@ std::string run_mgrep(
     FILE* pipe = popen(command.c_str(), "r");
     REQUIRE(pipe != nullptr);
 
-    while (fgets(buffer.data(), buffer.size(), pipe) != nullptr) {
-        output += buffer.data();
+    size_t bytes_read = 0;
+    while ((bytes_read = fread(buffer.data(), 1, buffer.size(), pipe)) > 0) {
+        output.append(buffer.data(), bytes_read);
     }
 
     const int status = pclose(pipe);
@@ -274,14 +276,15 @@ TEST_CASE("Help documents every accepted option and honors color settings")
     REQUIRE(exit_code == 0);
     REQUIRE(short_help.find('\x1b') == std::string::npos);
 
-    const std::array<const char*, 37> documented_options = {
+    const std::array<const char*, 41> documented_options = {
         "-h", "--help", "-v", "--invert-match", "-i", "--ignore-case",
         "-r", "-m NUM", "--literal", "-c", "--count", "-q", "--quiet",
         "-o", "--one-line", "-O", "--only-matching", "-l", "-s",
         "-B NUM", "-A NUM", "-n", "--heading", "--verbose", "-a",
         "--files", "--ff", "--files-from", "--files-from0", "--null-files-from",
         "--type", "--ext", "--glob", "--exclude-glob", "--colors",
-        "-p, --pretty", "-t, --theme"
+        "-p, --pretty", "-t, --theme", "--themes", "--max-depth", "--null",
+        "--file NAME"
     };
     for (const char* option : documented_options) {
         REQUIRE(short_help.find(option) != std::string::npos);
@@ -419,6 +422,152 @@ TEST_CASE("Files option does not search explicit stdin operand")
 
     REQUIRE(exit_code == 0);
     REQUIRE(output.empty());
+}
+
+TEST_CASE("File option recursively finds an exact basename without a pattern")
+{
+    CliFixture fixture;
+    std::string output = run_mgrep({
+        "--file", "three.cpp", fixture.root.string()
+    });
+
+    REQUIRE(output == (fixture.root / "src" / "nested" / "three.cpp").string() + "\n");
+
+    output = run_mgrep({
+        "--null", "--file", "three.cpp", fixture.root.string()
+    });
+    REQUIRE(output ==
+        (fixture.root / "src" / "nested" / "three.cpp").string() + std::string(1, '\0'));
+}
+
+TEST_CASE("File option defaults to the current directory and is repeatable")
+{
+    CliFixture fixture;
+    const std::string output = run_mgrep_in_dir(fixture.root, {
+        "--file", "one.txt", "--file", "three.cpp"
+    });
+
+    REQUIRE(output.find("./src/one.txt\n") != std::string::npos);
+    REQUIRE(output.find("./src/nested/three.cpp\n") != std::string::npos);
+    REQUIRE(output.find("./top.txt") == std::string::npos);
+}
+
+TEST_CASE("File option treats wildcard characters literally")
+{
+    CliFixture fixture;
+    const std::filesystem::path literal_wildcard = fixture.root / "*.cpp";
+    write_file(literal_wildcard, "literal wildcard filename\n");
+
+    const std::string output = run_mgrep({
+        "--file", "*.cpp", fixture.root.string()
+    });
+
+    REQUIRE(output == literal_wildcard.string() + "\n");
+}
+
+TEST_CASE("File option composes with depth and path filters")
+{
+    CliFixture fixture;
+
+    std::string output = run_mgrep({
+        "--file", "three.cpp", "--max-depth", "2", fixture.root.string()
+    });
+    REQUIRE(output.empty());
+
+    output = run_mgrep({
+        "--file", "three.cpp", "--ext", "txt", fixture.root.string()
+    });
+    REQUIRE(output.empty());
+
+    output = run_mgrep({
+        "--file", "one.txt", "--glob", "src/nested/**", fixture.root.string()
+    });
+    REQUIRE(output.empty());
+
+    output = run_mgrep({
+        "--file", "one.txt", "--glob", "src/**", fixture.root.string()
+    });
+    REQUIRE(output == (fixture.root / "src" / "one.txt").string() + "\n");
+}
+
+TEST_CASE("File option rejects empty names and paths")
+{
+    int exit_code = -1;
+    std::string output = run_mgrep({"--file", ""}, &exit_code);
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("--file requires a non-empty basename") != std::string::npos);
+
+    output = run_mgrep({"--file", "src/main.cpp"}, &exit_code);
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("--file requires a non-empty basename") != std::string::npos);
+}
+
+TEST_CASE("Max-depth limits traversal and enables recursive search")
+{
+    CliFixture fixture;
+
+    std::string output = run_mgrep({
+        "--files", "--max-depth", "0", fixture.root.string()
+    });
+    REQUIRE(output.empty());
+
+    output = run_mgrep({
+        "--files", "--max-depth", "1", fixture.root.string()
+    });
+    REQUIRE(output.find((fixture.root / "top.txt").string() + "\n") != std::string::npos);
+    REQUIRE(output.find((fixture.root / "src" / "one.txt").string()) == std::string::npos);
+
+    output = run_mgrep({
+        "--max-depth", "2", "needle", fixture.root.string()
+    });
+    REQUIRE(output.find(display_path(fixture.root / "src" / "one.txt")) != std::string::npos);
+    REQUIRE(output.find(display_path(fixture.root / "src" / "nested" / "three.cpp")) == std::string::npos);
+}
+
+TEST_CASE("Max-depth validates its argument")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep({
+        "--max-depth", "-1", "needle", "."
+    }, &exit_code);
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: invalid max-depth value: -1") != std::string::npos);
+}
+
+TEST_CASE("Null output safely delimits matching paths and file listings")
+{
+    CliFixture fixture;
+    const std::filesystem::path newline_path = fixture.root / "line\nbreak.txt";
+    write_file(newline_path, "needle in unusual path\n");
+
+    std::string output = run_mgrep({
+        "--null", "-r", "needle in unusual path", fixture.root.string()
+    });
+    REQUIRE(output == newline_path.string() + std::string(1, '\0'));
+
+    output = run_mgrep({
+        "--null", "--files", "--glob", "*break.txt", fixture.root.string()
+    });
+    REQUIRE(output == newline_path.string() + std::string(1, '\0'));
+}
+
+TEST_CASE("Null output rejects line-oriented and stdin searches")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+
+    std::string output = run_mgrep({
+        "--null", "-s", "needle", fixture.root.string()
+    }, &exit_code);
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("--null can only be used with path-only output") != std::string::npos);
+
+    output = run_mgrep_with_stdin(
+        "needle\n", {"--null", "needle"}, &exit_code
+    );
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("--null cannot be used when searching standard input") != std::string::npos);
 }
 
 TEST_CASE("Type option can restrict recursive search to headers")
@@ -1093,7 +1242,7 @@ TEST_CASE("Piped stdin supports line numbers and color highlighting")
         {"-pl", "needle"}
     );
 
-    REQUIRE(output == "\033[38;5;37m2:\033[0m\t\033[38;5;81mneedle\033[0m from stdin\n");
+    REQUIRE(output == "\033[38;5;37m2:\033[0m\t\033[38;5;248m\033[38;5;81mneedle\033[0m\033[38;5;248m from stdin\033[0m\n");
 }
 
 TEST_CASE("Piped stdin supports source option without changing plain source output")
@@ -1376,7 +1525,7 @@ TEST_CASE("Explicit dash mixed with files supports colors and line numbers")
     );
 
     REQUIRE(exit_code == 0);
-    REQUIRE(output.find("\033[38;5;37m2:\033[0m\t\033[38;5;81mneedle\033[0m from stdin\n") != std::string::npos);
+    REQUIRE(output.find("\033[38;5;37m2:\033[0m\t\033[38;5;248m\033[38;5;81mneedle\033[0m\033[38;5;248m from stdin\033[0m\n") != std::string::npos);
     REQUIRE(output.find(display_path(fixture.root / "src" / "two.md")) == std::string::npos);
 }
 
@@ -2337,6 +2486,23 @@ TEST_CASE("Files-from unreadable file returns a search error")
     REQUIRE(output.find("ERROR: could not read file: " + unreadable.string()) != std::string::npos);
 }
 
+TEST_CASE("Files-from stream read failures return a search error")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path directory_list = fixture.root / "list-directory";
+    std::filesystem::create_directories(directory_list);
+
+    const std::string output = run_mgrep({
+        "--files-from", directory_list.string(), "needle"
+    }, &exit_code);
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find(
+        "ERROR: could not read file list: " + directory_list.string()
+    ) != std::string::npos);
+}
+
 TEST_CASE("Explicit unreadable directory returns a search error")
 {
     CliFixture fixture;
@@ -2354,6 +2520,62 @@ TEST_CASE("Explicit unreadable directory returns a search error")
 
     REQUIRE(exit_code == 2);
     REQUIRE(output.find("ERROR: could not read directory: " + unreadable_dir.string()) != std::string::npos);
+}
+
+TEST_CASE("Unreadable descendant directories return a search error")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path unreadable_dir = fixture.root / "readable" / "blocked";
+    write_file(unreadable_dir / "hit.txt", "needle\n");
+    std::filesystem::permissions(unreadable_dir, std::filesystem::perms::none);
+
+    const std::string output = run_mgrep({
+        "-r", "needle", (fixture.root / "readable").string()
+    }, &exit_code);
+
+    std::filesystem::permissions(unreadable_dir, std::filesystem::perms::owner_all);
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find(
+        "ERROR: could not read directory: " + unreadable_dir.string()
+    ) != std::string::npos);
+}
+
+TEST_CASE("Explicit special-file operands return a search error")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path fifo = fixture.root / "input.fifo";
+    REQUIRE(::mkfifo(fifo.c_str(), 0600) == 0);
+
+    const std::string output = run_mgrep({"needle", fifo.string()}, &exit_code);
+
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find(
+        "ERROR: path is not a regular file or directory: " + fifo.string()
+    ) != std::string::npos);
+}
+
+TEST_CASE("Input read failures return a search error instead of no-match")
+{
+    const std::filesystem::path unreadable_stream = "/proc/self/mem";
+    if (!std::filesystem::exists(unreadable_stream)) {
+        return;
+    }
+
+    int exit_code = -1;
+    std::string output = run_mgrep({"needle", unreadable_stream.string()}, &exit_code);
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find(
+        "ERROR: could not read " + unreadable_stream.string()
+    ) != std::string::npos);
+
+    output = run_mgrep({"-c", "needle", unreadable_stream.string()}, &exit_code);
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find(
+        "ERROR: could not read " + unreadable_stream.string()
+    ) != std::string::npos);
 }
 
 TEST_CASE("Color output is enabled by default")
@@ -2397,7 +2619,7 @@ TEST_CASE("Theme option selects red output")
     const std::string output = run_mgrep({"-rls", "-t", "red", "needle here", fixture.root.string()});
 
     REQUIRE(output.find("\033[38;5;196mone.txt\033[0m") != std::string::npos);
-    REQUIRE(output.find("\033[38;5;124m2:\033[0m\t\033[38;5;217mneedle here\033[0m") != std::string::npos);
+    REQUIRE(output.find("\033[38;5;124m2:\033[0m\t\033[38;5;248m\033[38;5;217mneedle here\033[0m") != std::string::npos);
 }
 
 TEST_CASE("Purple color preset is supported")
@@ -2407,7 +2629,7 @@ TEST_CASE("Purple color preset is supported")
     const std::string output = run_mgrep({"-rls", "--theme", "purple", "needle here", fixture.root.string()});
 
     REQUIRE(output.find("\033[38;5;141mone.txt\033[0m") != std::string::npos);
-    REQUIRE(output.find("\033[38;5;98m2:\033[0m\t\033[38;5;177mneedle here\033[0m") != std::string::npos);
+    REQUIRE(output.find("\033[38;5;98m2:\033[0m\t\033[38;5;248m\033[38;5;177mneedle here\033[0m") != std::string::npos);
 }
 
 TEST_CASE("Named editor-style color presets are supported")
@@ -2439,8 +2661,42 @@ TEST_CASE("Named editor-style color presets are supported")
 
         REQUIRE(output.find(std::string(theme.file_color) + "one.txt\033[0m") != std::string::npos);
         REQUIRE(output.find(std::string(theme.line_color) + "2:\033[0m\t" +
-            theme.match_color + "needle here\033[0m") != std::string::npos);
+            "\033[38;5;248m" + theme.match_color + "needle here\033[0m") != std::string::npos);
     }
+}
+
+TEST_CASE("Themes option previews every built-in theme without a pattern")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep({"--themes"}, &exit_code);
+    const std::array<const char*, 14> theme_names = {
+        "blue", "red", "green", "purple", "cyan", "yellow", "orange", "pink",
+        "mono", "bright", "gruvbox", "nord", "dracula", "nebula"
+    };
+
+    REQUIRE(exit_code == 0);
+    for (const char* theme_name : theme_names) {
+        REQUIRE(output.find(std::string(theme_name) + "\n") != std::string::npos);
+    }
+    REQUIRE(output.find("src/search.cpp") != std::string::npos);
+    REQUIRE(output.find("42: if (pattern_matches(line)) {") != std::string::npos);
+    REQUIRE(output.find('\x1b') == std::string::npos);
+}
+
+TEST_CASE("Themes option emits ANSI previews when colors are enabled")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep(
+        {"--themes"},
+        &exit_code,
+        test_home_without_ignore(),
+        false
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find("\033[38;5;75mblue\033[0m") != std::string::npos);
+    REQUIRE(output.find("\033[38;5;248mif (") != std::string::npos);
+    REQUIRE(output.find("\033[38;5;81mpattern_matches\033[0m") != std::string::npos);
 }
 
 TEST_CASE("Pretty option remains a color-on compatibility alias")
@@ -2450,7 +2706,7 @@ TEST_CASE("Pretty option remains a color-on compatibility alias")
     const std::string output = run_mgrep({"-rls", "--pretty", "needle here", fixture.root.string()});
 
     REQUIRE(output.find("\033[38;5;75mone.txt\033[0m") != std::string::npos);
-    REQUIRE(output.find("\033[38;5;37m2:\033[0m\t\033[38;5;81mneedle here\033[0m") != std::string::npos);
+    REQUIRE(output.find("\033[38;5;37m2:\033[0m\t\033[38;5;248m\033[38;5;81mneedle here\033[0m") != std::string::npos);
 }
 
 TEST_CASE("Color-name pattern is not consumed as a theme")
@@ -2574,6 +2830,40 @@ TEST_CASE("Max-lines option stops scanning after the requested line count")
 
     REQUIRE(output.find("needle here") == std::string::npos);
     REQUIRE(output.find("needle nested") == std::string::npos);
+}
+
+TEST_CASE("Max-lines ignores binary data after the final permitted line")
+{
+    const std::string content("needle\nlate\0binary\n", 19);
+    int exit_code = -1;
+
+    std::string output = run_mgrep_with_stdin(
+        content, {"--no-color", "-m", "1", "-s", "needle"}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "needle\n");
+
+    output = run_mgrep_with_stdin(
+        content, {"--no-color", "-m", "1", "-c", "needle"}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "1\n");
+
+    output = run_mgrep_with_stdin(
+        content, {"--no-color", "-m", "1", "-q", "needle"}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+
+    output = run_mgrep_with_stdin(
+        content, {"--no-color", "-m", "1", "-O", "needle"}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "needle\n");
+
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "max-lines-late-binary.txt";
+    write_file(path, content);
+    output = run_mgrep(
+        {"--no-color", "-m", "1", "-c", "needle", path.string()}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == display_path(path) + "\t1\n");
 }
 
 TEST_CASE("Invalid numeric options are rejected")
@@ -2846,17 +3136,133 @@ TEST_CASE("Invalid regular expressions return the search error status")
     REQUIRE(output.find("ERROR: invalid regex:") != std::string::npos);
 }
 
-TEST_CASE("Regex rejects output modes that are not implemented yet")
+TEST_CASE("Regex count mode counts matching lines")
 {
     int exit_code = -1;
     const std::string output = run_mgrep_with_stdin(
-        "alpha\nbeta\n",
+        "alpha alpha\nbeta\ngamma\n",
         {"-c", "alpha|beta"},
         &exit_code
     );
 
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "2\n");
+}
+
+TEST_CASE("Regex quiet mode reports status without output")
+{
+    int exit_code = -1;
+    std::string output = run_mgrep_with_stdin(
+        "alpha\nbeta\n",
+        {"-q", "be.*"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+
+    output = run_mgrep_with_stdin("alpha\nbeta\n", {"-q", "z+"}, &exit_code);
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Regex quiet mode rejects a late binary marker after an early match")
+{
+    std::string content = "alpha\n";
+    content.append(140000, 'x');
+    content.append("\0binary\n", 8);
+
+    int exit_code = -1;
+    std::string output = run_mgrep_with_stdin(content, {"-q", "alpha|beta"}, &exit_code);
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "late-regex-quiet-binary.txt";
+    write_file(path, content);
+    output = run_mgrep({"--no-color", "-q", "alpha|beta", path.string()}, &exit_code);
+    REQUIRE(exit_code == 1);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Regex only-matching emits each non-empty match")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "ab12 cd345\nnone\n",
+        {"-O", "[0-9]+"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "12\n345\n");
+}
+
+TEST_CASE("Regex count quiet and only-matching work for files")
+{
+    CliFixture fixture;
+    const std::filesystem::path path = fixture.root / "regex-output-modes.txt";
+    write_file(path, "item-12 item-34\nnone\nitem-567\n");
+
+    int exit_code = -1;
+    std::string output = run_mgrep({"--no-color", "-c", "item-[0-9]+", path.string()}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == display_path(path) + "\t2\n");
+
+    output = run_mgrep({"--no-color", "-O", "[0-9]+", path.string()}, &exit_code);
+    const std::string prefix = display_path(path) + "\t";
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == prefix + "12\n" + prefix + "34\n" + prefix + "567\n");
+
+    output = run_mgrep({"--no-color", "-q", "item-[0-9]+", path.string()}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.empty());
+}
+
+TEST_CASE("Regex only-matching suppresses zero-length matches and still advances")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "aa b aaa\n",
+        {"-O", "a*"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "aa\naaa\n");
+
+    const std::string empty_only_output = run_mgrep_with_stdin(
+        "bbb\n",
+        {"-O", "z*"},
+        &exit_code
+    );
+    REQUIRE(exit_code == 0);
+    REQUIRE(empty_only_output.empty());
+}
+
+TEST_CASE("Regex only-matching preserves anchors and boundaries after each match")
+{
+    int exit_code = -1;
+    std::string output = run_mgrep_with_stdin("abc\n", {"-O", "^."}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "a\n");
+
+    output = run_mgrep_with_stdin("ab cd\n", {"-O", "\\b."}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "a\n \nc\n");
+}
+
+TEST_CASE("Regex one-line mode remains unsupported")
+{
+    int exit_code = -1;
+    const std::string output = run_mgrep_with_stdin(
+        "alpha\nbeta\n",
+        {"--one-line", "alpha|beta"},
+        &exit_code
+    );
+
     REQUIRE(exit_code == 2);
-    REQUIRE(output.find("ERROR: regex is currently supported only for line-oriented output") !=
+    REQUIRE(output.find("ERROR: regex is not yet supported with --one-line or multiline patterns") !=
             std::string::npos);
 }
 
@@ -2870,7 +3276,7 @@ TEST_CASE("Regex newline patterns are rejected until multiline regex is supporte
         &exit_code
     );
 
-    REQUIRE(output.find("ERROR: regex is currently supported only for line-oriented output") !=
+    REQUIRE(output.find("ERROR: regex is not yet supported with --one-line or multiline patterns") !=
             std::string::npos);
     REQUIRE(exit_code == 2);
 }
@@ -2893,7 +3299,7 @@ TEST_CASE("Encoded regex newlines are rejected until multiline regex is supporte
         );
 
         REQUIRE(exit_code == 2);
-        REQUIRE(output.find("ERROR: regex is currently supported only for line-oriented output") !=
+        REQUIRE(output.find("ERROR: regex is not yet supported with --one-line or multiline patterns") !=
                 std::string::npos);
     }
 }

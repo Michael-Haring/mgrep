@@ -9,6 +9,7 @@
 #include <mutex>
 #include <queue>
 #include <string>
+#include <utility>
 #include <vector>
 
 inline constexpr size_t FILE_BATCH_SIZE = 32;
@@ -38,7 +39,7 @@ struct DirectoryTraversalWork {
     {}
 
     SearchWork& search;
-    std::queue<std::string> dirs;
+    std::queue<std::pair<std::string, unsigned int>> dirs;
     std::mutex dirs_mtx;
     std::mutex search_mtx;
     std::condition_variable cv;
@@ -53,10 +54,14 @@ void push_file_batch(
     ReadFileFn read_file,
     std::atomic<bool>& stop_requested
 );
-void collect_search_files_recursive(std::string& root, SearchWork& work);
+void collect_search_files_recursive(std::string& root, SearchWork& work, unsigned int depth);
 void collect_search_files_recursive_parallel(std::string& root, SearchWork& work);
 void traverse_dir_worker(DirectoryTraversalWork& traversal);
-void collect_search_files_one_dir(std::string& root, DirectoryTraversalWork& traversal);
+void collect_search_files_one_dir(
+    std::string& root,
+    unsigned int depth,
+    DirectoryTraversalWork& traversal
+);
 void collect_search_files(const std::string& root, SearchWork& work);
 void add_search_path(SearchWork& work, const std::string& path);
 void add_search_paths(SearchWork& work, std::vector<std::string>& paths);

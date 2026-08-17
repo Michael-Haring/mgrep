@@ -32,6 +32,10 @@ constexpr int EXCLUDE_GLOB_OPTION = 1016;
 constexpr int HEADING_OPTION = 1017;
 constexpr int FILES_OPTION = 1018;
 constexpr int ONE_LINE_OPTION = 1019;
+constexpr int THEMES_OPTION = 1020;
+constexpr int MAX_DEPTH_OPTION = 1021;
+constexpr int NULL_OPTION = 1022;
+constexpr int FILE_OPTION = 1023;
 
 using std::cout;
 
@@ -51,7 +55,9 @@ bool long_option_takes_argument(std::string_view option)
         option == "--type" ||
         option == "--ext" ||
         option == "--glob" ||
-        option == "--exclude-glob";
+        option == "--exclude-glob" ||
+        option == "--max-depth" ||
+        option == "--file";
 }
 
 bool append_file_list_operand(
@@ -496,6 +502,23 @@ bool path_filter_allows(std::string_view path, const UserOptions& user_stats)
         return false;
     }
 
+    if (!user_stats.exact_filenames.empty()) {
+        const size_t slash_pos = path.find_last_of('/');
+        const std::string_view filename = slash_pos == std::string_view::npos
+            ? path
+            : path.substr(slash_pos + 1);
+        bool exact_match = false;
+        for (const auto& exact_filename : user_stats.exact_filenames) {
+            if (filename == exact_filename) {
+                exact_match = true;
+                break;
+            }
+        }
+        if (!exact_match) {
+            return false;
+        }
+    }
+
     if (user_stats.include_globs.empty()) {
         return true;
     }
@@ -548,7 +571,9 @@ void printHelp(const char* file_name, const UserOptions& user_stats)
     cout << "Usage:\n";
     cout << "  " << file_name << " [OPTIONS] PATTERN [PATH ...]\n";
     cout << "  " << file_name << " [OPTIONS] PATTERN -\n";
-    cout << "  " << file_name << " [FILTER OPTIONS] --files [PATH ...]\n\n";
+    cout << "  " << file_name << " [FILTER OPTIONS] --files [PATH ...]\n";
+    cout << "  " << file_name << " [FILTER OPTIONS] --file NAME [PATH ...]\n";
+    cout << "  " << file_name << " [--no-color] --themes\n\n";
 
     cout << "Search options:\n";
     print_option("-h, --help", "Show this help and exit");
@@ -556,6 +581,7 @@ void printHelp(const char* file_name, const UserOptions& user_stats)
     print_option("-i, --ignore-case", "Matches case-insensitively");
     print_option("-r", "Recursively search directories");
     print_option("-m NUM", "Read at most NUM lines from each input");
+    print_option("--max-depth NUM", "Descend at most NUM path levels; enables recursive search");
     print_option("--literal", "Treat every pattern character literally");
 
     cout << "\nOutput options:\n";
@@ -570,20 +596,23 @@ void printHelp(const char* file_name, const UserOptions& user_stats)
     print_option("-n", "Prints an additional newline after each result");
     print_option("--heading", "Force grouped output; enabled automatically on terminals");
     print_option("--verbose", "Prints completion and match statistics");
+    print_option("--null", "Terminate path-only output records with NUL bytes");
 
     cout << "\nInput and filtering options:\n";
     print_option("-a", "Searches all files, including binary-looking and normally skipped files");
     print_option("--files", "Lists files mgrep would search, without requiring a pattern");
+    print_option("--file NAME", "Recursively finds files with the exact basename NAME; repeatable");
     print_option("--ff FILE, --files-from FILE", "Reads newline-delimited input file paths from FILE");
     print_option("--files-from0 FILE, --null-files-from FILE", "Reads NUL-delimited input file paths from FILE");
     print_option("--type TYPE", "Only searches files in a named type: header, source, cpp");
     print_option("--ext EXT[,EXT...]", "Only searches files with matching extensions");
-    print_option("--glob GLOB", "Only searches paths matching GLOB");
+    print_option("--glob GLOB", "Only searches paths matching a wildcard or path pattern");
     print_option("--exclude-glob GLOB", "Skips paths matching GLOB");
 
     cout << "\nAppearance options:\n";
     print_option("-p, --pretty", "Compatibility alias; colors are enabled by default");
     print_option("-t, --theme THEME", "Selects a named color theme; see mgrep(1) for names");
+    print_option("--themes", "Preview every built-in color theme and exit");
     print_option("--no-color", "Disable ANSI color output");
     print_option("--colors COMPONENT:ATTR:VALUE", "Override colors. Components: path, file, line, match, source");
     cout << "      Attributes: fg, bg, style. Example: --colors match:fg:magenta\n";
@@ -629,6 +658,10 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
         {"heading", no_argument, nullptr, HEADING_OPTION},
         {"files", no_argument, nullptr, FILES_OPTION},
         {"verbose", no_argument, nullptr, VERBOSE_OPTION},
+        {"themes", no_argument, nullptr, THEMES_OPTION},
+        {"max-depth", required_argument, nullptr, MAX_DEPTH_OPTION},
+        {"null", no_argument, nullptr, NULL_OPTION},
+        {"file", required_argument, nullptr, FILE_OPTION},
         {nullptr, 0, nullptr, 0}
     };
 
@@ -780,6 +813,28 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
             case VERBOSE_OPTION:
                 user_stats.is_verbose = true;
                 break;
+            case THEMES_OPTION:
+                user_stats.show_themes = true;
+                break;
+            case MAX_DEPTH_OPTION:
+                if (!parse_nonnegative_option(optarg, user_stats.max_depth)) {
+                    std::cerr << "ERROR: invalid max-depth value: " << optarg << "\n";
+                    return {false, MGREP_EXIT_ERROR, optind};
+                }
+                user_stats.recursive_mode = true;
+                break;
+            case NULL_OPTION:
+                user_stats.null_output = true;
+                break;
+            case FILE_OPTION:
+                if (optarg[0] == '\0' || std::string_view(optarg).find('/') != std::string_view::npos) {
+                    std::cerr << "ERROR: --file requires a non-empty basename without '/'\n";
+                    return {false, MGREP_EXIT_ERROR, optind};
+                }
+                user_stats.exact_filenames.emplace_back(optarg);
+                user_stats.list_files = true;
+                user_stats.recursive_mode = true;
+                break;
             default:
                 return {false, MGREP_EXIT_ERROR, optind};
         }
@@ -791,12 +846,30 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
             return {false, MGREP_EXIT_ERROR, optind};
         }
     }
+    if (user_stats.show_themes) {
+        print_theme_previews(user_stats.cool_colors);
+        return {false, MGREP_EXIT_MATCH_FOUND, optind};
+    }
     if (user_stats.only_matching && user_stats.invert_match) {
         std::cerr << "ERROR: --only-matching cannot be used with --invert-match\n";
         return {false, MGREP_EXIT_ERROR, optind};
     }
     if (user_stats.one_line && user_stats.only_matching) {
         std::cerr << "ERROR: --one-line cannot be used with --only-matching\n";
+        return {false, MGREP_EXIT_ERROR, optind};
+    }
+    if (user_stats.null_output &&
+        (user_stats.count_print ||
+         user_stats.source_print ||
+         user_stats.line_number_print ||
+         user_stats.add_newline ||
+         user_stats.only_matching ||
+         user_stats.one_line ||
+         user_stats.heading ||
+         user_stats.is_verbose ||
+         user_stats.print_before_source > 0 ||
+         user_stats.print_after_source > 0)) {
+        std::cerr << "ERROR: --null can only be used with path-only output or --files\n";
         return {false, MGREP_EXIT_ERROR, optind};
     }
     if (user_stats.one_line &&
@@ -827,10 +900,9 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
     }
 
     if (user_stats.regex_pattern) {
-        if (user_stats.count_print || user_stats.only_matching || user_stats.one_line ||
-            user_stats.quiet || pattern_has_regex_newline(user_stats.pattern)) {
-            std::cerr << "ERROR: regex is currently supported only for line-oriented output; "
-                      << "use --literal or remove -c, -O, --one-line, --quiet, or multiline input\n";
+        if (user_stats.one_line || pattern_has_regex_newline(user_stats.pattern)) {
+            std::cerr << "ERROR: regex is not yet supported with --one-line or multiline patterns; "
+                      << "use --literal or remove the unsupported mode\n";
             return {false, MGREP_EXIT_ERROR, optind};
         }
 
@@ -847,6 +919,14 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
     }
 
     record_input_operands(original_args, user_stats);
+    if (user_stats.null_output && !user_stats.list_files) {
+        for (const auto& operand : user_stats.input_operands) {
+            if (operand.kind == InputOperand::Kind::Stdin) {
+                std::cerr << "ERROR: --null cannot be used when searching standard input\n";
+                return {false, MGREP_EXIT_ERROR, optind};
+            }
+        }
+    }
     if (user_stats.list_files && user_stats.input_operands.empty()) {
         user_stats.input_operands.push_back({InputOperand::Kind::Path, ".", '\n'});
     }

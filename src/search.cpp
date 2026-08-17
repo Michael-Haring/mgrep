@@ -30,6 +30,7 @@
 using std::cout;
 
 size_t matches = 0;
+std::atomic<bool> search_error{false};
 
 namespace {
 
@@ -41,6 +42,37 @@ thread_local void* direct_output_context = nullptr;
 #else
 #define MGREP_COLD_NOINLINE
 #endif
+
+MGREP_COLD_NOINLINE void report_input_error(const char* operation, const char* path)
+{
+    const int error = errno;
+    search_error.store(true, std::memory_order_relaxed);
+    std::cerr << "ERROR: could not " << operation << ' '
+              << (path == nullptr ? "stdin" : path)
+              << ": " << std::strerror(error) << "\n";
+}
+
+int open_search_file(const std::string& path)
+{
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd == -1) {
+        report_input_error("open", path.c_str());
+    }
+    return fd;
+}
+
+ssize_t read_search_input(int fd, void* buffer, size_t size, const char* path)
+{
+    ssize_t result;
+    do {
+        result = ::read(fd, buffer, size);
+    } while (result < 0 && errno == EINTR);
+
+    if (result < 0) {
+        report_input_error("read", path);
+    }
+    return result;
+}
 
 enum class FastScanResult {
     NoMatch,
@@ -131,6 +163,30 @@ const char* find_match(
     return static_cast<const char*>(
         ::memmem(data, size, user_stats.pattern.data(), pattern_len)
     );
+}
+
+const char* find_match_from(
+    const char* data,
+    size_t size,
+    size_t start_pos,
+    const UserOptions& user_stats,
+    size_t* match_len = nullptr
+)
+{
+    if (!user_stats.regex_pattern) {
+        return find_match(data + start_pos, size - start_pos, user_stats, match_len);
+    }
+
+    re2::StringPiece match;
+    const re2::StringPiece text(data, size);
+    if (!user_stats.compiled_regex->Match(
+            text, start_pos, size, re2::RE2::UNANCHORED, &match, 1)) {
+        return nullptr;
+    }
+    if (match_len != nullptr) {
+        *match_len = match.size();
+    }
+    return match.data();
 }
 
 bool contains_match(const char* data, size_t size, const UserOptions& user_stats)
@@ -362,18 +418,80 @@ bool direct_output_available()
     return direct_output_fn != nullptr;
 }
 
+void append_path_only_record(
+    std::string& output,
+    const std::string& path,
+    size_t name_pos,
+    const UserOptions& user_stats
+)
+{
+    if (user_stats.null_output) {
+        if (user_stats.cool_colors) {
+            output.append(user_stats.colors.path);
+        }
+        output.append(path);
+        if (user_stats.cool_colors) {
+            output.append(RESET);
+        }
+        output.push_back('\0');
+        return;
+    }
+
+    if (user_stats.cool_colors) {
+        append_colored_path(output, path, name_pos, user_stats.colors);
+    } else {
+        append_plain_path(output, path, name_pos);
+    }
+    output.push_back('\n');
+}
+
+size_t bytes_within_max_lines(
+    const char* data,
+    size_t size,
+    unsigned int max_lines,
+    size_t lines_seen
+)
+{
+    if (max_lines == 0) {
+        return size;
+    }
+    if (lines_seen >= max_lines) {
+        return 0;
+    }
+
+    size_t remaining_lines = max_lines - lines_seen;
+    const char* scan = data;
+    const char* end = data + size;
+    while (remaining_lines > 0) {
+        const void* newline_hit = std::memchr(scan, '\n', end - scan);
+        if (newline_hit == nullptr) {
+            return size;
+        }
+        scan = static_cast<const char*>(newline_hit) + 1;
+        if (--remaining_lines == 0) {
+            return static_cast<size_t>(scan - data);
+        }
+    }
+
+    return 0;
+}
+
 template <size_t BufferSize, typename ProcessLine>
 bool read_fd_lines(
     int fd,
+    const char* path,
     std::array<char, BufferSize>& buffer,
     std::string& pending_line,
     bool allow_binary,
+    unsigned int max_lines,
+    const size_t& lines_seen,
     bool& stop,
     ProcessLine&& process_line
 )
 {
     while (!stop) {
-        const ssize_t bytes_read = ::read(fd, buffer.data(), buffer.size());
+        const ssize_t bytes_read = read_search_input(
+            fd, buffer.data(), buffer.size(), path);
         if (bytes_read <= 0) {
             break;
         }
@@ -382,7 +500,14 @@ bool read_fd_lines(
         const char* chunk_end = chunk_start + bytes_read;
         const char* line_start = chunk_start;
 
-        if (!allow_binary && std::memchr(chunk_start, '\0', bytes_read) != nullptr) {
+        const size_t binary_check_size = bytes_within_max_lines(
+            chunk_start,
+            static_cast<size_t>(bytes_read),
+            max_lines,
+            lines_seen
+        );
+        if (!allow_binary &&
+            std::memchr(chunk_start, '\0', binary_check_size) != nullptr) {
             return false;
         }
 
@@ -595,24 +720,43 @@ void append_line_prefix_for_options(std::string& output, size_t line_num, const 
     output.push_back('\t');
 }
 
-size_t read_all_fd(int fd, std::string& content, bool allow_binary)
+size_t read_all_fd(
+    int fd,
+    std::string& content,
+    bool allow_binary,
+    unsigned int max_lines = 0,
+    const char* path = nullptr
+)
 {
     constexpr size_t BUFFER_SIZE = 128 * 1024;
     std::array<char, BUFFER_SIZE> buffer;
+    size_t lines_seen = 0;
 
     while (true) {
-        const ssize_t bytes_read = ::read(fd, buffer.data(), buffer.size());
+        const ssize_t bytes_read = read_search_input(
+            fd, buffer.data(), buffer.size(), path);
         if (bytes_read <= 0) {
             break;
         }
 
-        if (!allow_binary &&
-            std::memchr(buffer.data(), '\0', static_cast<size_t>(bytes_read)) != nullptr) {
+        const size_t append_size = bytes_within_max_lines(
+            buffer.data(),
+            static_cast<size_t>(bytes_read),
+            max_lines,
+            lines_seen
+        );
+        if (!allow_binary && std::memchr(buffer.data(), '\0', append_size) != nullptr) {
             content.clear();
             return 0;
         }
 
-        content.append(buffer.data(), static_cast<size_t>(bytes_read));
+        content.append(buffer.data(), append_size);
+        lines_seen += static_cast<size_t>(
+            std::count(buffer.data(), buffer.data() + append_size, '\n')
+        );
+        if (max_lines > 0 && lines_seen >= max_lines) {
+            break;
+        }
     }
 
     return content.size();
@@ -856,14 +1000,14 @@ size_t emit_multiline_content_matches(
 
 size_t read_file_multiline_pattern(const std::string& path, UserOptions& user_stats, std::string& output)
 {
-    int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    int fd = open_search_file(path);
     if (fd == -1) {
         return 0;
     }
 
     std::string content;
     content.reserve(128 * 1024);
-    read_all_fd(fd, content, user_stats.all_files);
+    read_all_fd(fd, content, user_stats.all_files, user_stats.max_lines, path.c_str());
     ::close(fd);
     apply_max_lines_limit(content, user_stats.max_lines);
 
@@ -882,7 +1026,7 @@ size_t read_file_fast(const std::string& path, UserOptions& user_stats, std::str
 {
     constexpr size_t FAST_BUFFER_SIZE = 128 * 1024;
 
-    int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    int fd = open_search_file(path);
     if (fd == -1) {
         return 0;
     }
@@ -910,7 +1054,8 @@ size_t read_file_fast(const std::string& path, UserOptions& user_stats, std::str
     bool found_match = false;
 
     while (true) {
-        ssize_t bytes_read = ::read(fd, buffer.data() + carry_len, FAST_BUFFER_SIZE);
+        ssize_t bytes_read = read_search_input(
+            fd, buffer.data() + carry_len, FAST_BUFFER_SIZE, path.c_str());
 
         if (bytes_read <= 0) {
             break;
@@ -963,13 +1108,7 @@ size_t read_file_fast(const std::string& path, UserOptions& user_stats, std::str
                 return local_matches;
             }
 
-            if (user_stats.cool_colors) {
-                append_colored_path(output, path, get_name_pos(), user_stats.colors);
-                output.push_back('\n');
-            } else {
-                append_plain_path(output, path, get_name_pos());
-                output.push_back('\n');
-            }
+            append_path_only_record(output, path, get_name_pos(), user_stats);
 
             ++local_matches;
             ::close(fd);
@@ -989,13 +1128,7 @@ size_t read_file_fast(const std::string& path, UserOptions& user_stats, std::str
             return 1;
         }
 
-        if (user_stats.cool_colors) {
-            append_colored_path(output, path, get_name_pos(), user_stats.colors);
-            output.push_back('\n');
-        } else {
-            append_plain_path(output, path, get_name_pos());
-            output.push_back('\n');
-        }
+        append_path_only_record(output, path, get_name_pos(), user_stats);
 
         return 1;
     }
@@ -1007,7 +1140,7 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
 {
         constexpr size_t LINE_BUFFER_SIZE = 128 * 1024;
 
-        int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        int fd = open_search_file(path);
         if (fd == -1) {
             return 0;
         }
@@ -1169,12 +1302,7 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
 
             if (invert_path_only) {
                 if (local_matches == 0) {
-                    if (user_stats.cool_colors) {
-                        append_colored_path(output, path, get_name_pos(), user_stats.colors);
-                    } else {
-                        append_plain_path(output, path, get_name_pos());
-                    }
-                    output.push_back('\n');
+                    append_path_only_record(output, path, get_name_pos(), user_stats);
                 }
                 ++local_matches;
                 return;
@@ -1182,12 +1310,7 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
 
             if (regex_path_only) {
                 if (local_matches == 0) {
-                    if (user_stats.cool_colors) {
-                        append_colored_path(output, path, get_name_pos(), user_stats.colors);
-                    } else {
-                        append_plain_path(output, path, get_name_pos());
-                    }
-                    output.push_back('\n');
+                    append_path_only_record(output, path, get_name_pos(), user_stats);
                     local_matches = 1;
                 }
                 return;
@@ -1315,7 +1438,7 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
 
                 emit_match(line_data, line_len, line_num, hit, match_len);
                 after_remaining = after;
-                if (user_stats.quiet && local_matches > 0) {
+                if (user_stats.quiet && user_stats.all_files && local_matches > 0) {
                     stop = true;
                 }
             }
@@ -1373,7 +1496,8 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
         };
 
         while (!stop) {
-            ssize_t bytes_read = ::read(fd, buffer.data(), buffer.size());
+            ssize_t bytes_read = read_search_input(
+                fd, buffer.data(), buffer.size(), path.c_str());
 
             if (bytes_read <= 0) {
                 break;
@@ -1383,7 +1507,14 @@ size_t read_file_line_options(const std::string& path, UserOptions& user_stats, 
             const char* chunk_end = buffer.data() + bytes_read;
             const char* line_start = chunk_start;
 
-            if (!user_stats.all_files && std::memchr(chunk_start, '\0', bytes_read) != nullptr) {
+            const size_t binary_check_size = bytes_within_max_lines(
+                chunk_start,
+                static_cast<size_t>(bytes_read),
+                user_stats.max_lines,
+                line_num
+            );
+            if (!user_stats.all_files &&
+                std::memchr(chunk_start, '\0', binary_check_size) != nullptr) {
                 output.resize(output_start);
                 ::close(fd);
                 return 0;
@@ -1532,7 +1663,7 @@ size_t read_file_count(const std::string& path, UserOptions& user_stats, std::st
 {
     constexpr size_t LINE_BUFFER_SIZE = 128 * 1024;
 
-    int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    int fd = open_search_file(path);
     if (fd == -1) {
         return 0;
     }
@@ -1569,9 +1700,12 @@ size_t read_file_count(const std::string& path, UserOptions& user_stats, std::st
 
     if (!read_fd_lines(
             fd,
+            path.c_str(),
             buffer,
             pending_line,
             user_stats.all_files,
+            user_stats.max_lines,
+            line_num,
             stop,
             process_line)) {
         output.resize(output_start);
@@ -1599,7 +1733,7 @@ size_t read_file_only_matching(const std::string& path, UserOptions& user_stats,
 {
     constexpr size_t LINE_BUFFER_SIZE = 128 * 1024;
 
-    int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    int fd = open_search_file(path);
     if (fd == -1) {
         return 0;
     }
@@ -1623,7 +1757,7 @@ size_t read_file_only_matching(const std::string& path, UserOptions& user_stats,
     size_t line_num = 0;
     bool stop = false;
 
-    auto emit_occurrence = [&](size_t match_line_num, const char* hit) {
+    auto emit_occurrence = [&](size_t match_line_num, const char* hit, size_t match_len) {
         if (user_stats.cool_colors) {
             append_colored_path(output, path, get_name_pos(), user_stats.colors);
         } else {
@@ -1646,10 +1780,10 @@ size_t read_file_only_matching(const std::string& path, UserOptions& user_stats,
         output.push_back('\t');
         if (user_stats.cool_colors) {
             output.append(user_stats.colors.match);
-            output.append(hit, pattern_len);
+            output.append(hit, match_len);
             output.append(RESET);
         } else {
-            output.append(hit, pattern_len);
+            output.append(hit, match_len);
         }
         output.append(user_stats.add_newline ? "\n\n" : "\n");
         ++local_matches;
@@ -1657,7 +1791,7 @@ size_t read_file_only_matching(const std::string& path, UserOptions& user_stats,
 
     auto process_line = [&](const char* line_data, size_t line_len) {
         ++line_num;
-        if (pattern_len == 0) {
+        if (!user_stats.regex_pattern && pattern_len == 0) {
             ++local_matches;
             if (user_stats.max_lines > 0 && line_num >= user_stats.max_lines) {
                 stop = true;
@@ -1665,19 +1799,33 @@ size_t read_file_only_matching(const std::string& path, UserOptions& user_stats,
             return;
         }
 
-        const char* scan_pos = line_data;
-        size_t remaining = line_len;
+        size_t scan_offset = 0;
+        const size_t matches_before = local_matches;
+        bool found_match = false;
 
-        while (remaining >= pattern_len) {
-            const char* hit = find_match(scan_pos, remaining, user_stats);
+        while (scan_offset <= line_len &&
+               line_len - scan_offset >= (user_stats.regex_pattern ? 0 : pattern_len)) {
+            size_t match_len = pattern_len;
+            const char* hit = find_match_from(
+                line_data, line_len, scan_offset, user_stats, &match_len);
             if (hit == nullptr) {
                 break;
             }
+            found_match = true;
 
-            emit_occurrence(line_num, hit);
-            const size_t advance = static_cast<size_t>(hit - scan_pos) + pattern_len;
-            scan_pos += advance;
-            remaining -= advance;
+            if (match_len > 0) {
+                emit_occurrence(line_num, hit, match_len);
+            }
+            const size_t hit_offset = static_cast<size_t>(hit - line_data);
+            const size_t next_offset = hit_offset + (match_len > 0 ? match_len : 1);
+            if (next_offset > line_len) {
+                break;
+            }
+            scan_offset = next_offset;
+        }
+
+        if (found_match && local_matches == matches_before) {
+            ++local_matches;
         }
 
         if (user_stats.max_lines > 0 && line_num >= user_stats.max_lines) {
@@ -1686,7 +1834,8 @@ size_t read_file_only_matching(const std::string& path, UserOptions& user_stats,
     };
 
     while (!stop) {
-        ssize_t bytes_read = ::read(fd, buffer.data(), buffer.size());
+        ssize_t bytes_read = read_search_input(
+            fd, buffer.data(), buffer.size(), path.c_str());
 
         if (bytes_read <= 0) {
             break;
@@ -1696,7 +1845,14 @@ size_t read_file_only_matching(const std::string& path, UserOptions& user_stats,
         const char* chunk_end = buffer.data() + bytes_read;
         const char* line_start = chunk_start;
 
-        if (!user_stats.all_files && std::memchr(chunk_start, '\0', bytes_read) != nullptr) {
+        const size_t binary_check_size = bytes_within_max_lines(
+            chunk_start,
+            static_cast<size_t>(bytes_read),
+            user_stats.max_lines,
+            line_num
+        );
+        if (!user_stats.all_files &&
+            std::memchr(chunk_start, '\0', binary_check_size) != nullptr) {
             output.resize(output_start);
             ::close(fd);
             return 0;
@@ -1738,10 +1894,6 @@ size_t read_file_only_matching(const std::string& path, UserOptions& user_stats,
 
 ReadFileFn choose_read_file(const UserOptions& user_stats)
 {
-    if (user_stats.regex_pattern) {
-        return read_file_line_options;
-    }
-
     if (pattern_has_newline(user_stats) &&
         !user_stats.invert_match &&
         (user_stats.count_print ||
@@ -1756,7 +1908,8 @@ ReadFileFn choose_read_file(const UserOptions& user_stats)
         return read_file_multiline_pattern;
     }
 
-    if (user_stats.quiet && (user_stats.invert_match || user_stats.max_lines > 0)) {
+    if (user_stats.quiet &&
+        (user_stats.regex_pattern || user_stats.invert_match || user_stats.max_lines > 0)) {
         return read_file_line_options;
     }
 
@@ -1774,6 +1927,10 @@ ReadFileFn choose_read_file(const UserOptions& user_stats)
 
     if (user_stats.only_matching) {
         return read_file_only_matching;
+    }
+
+    if (user_stats.regex_pattern) {
+        return read_file_line_options;
     }
 
     if (!user_stats.source_print &&
@@ -1844,7 +2001,7 @@ size_t search_stdin(UserOptions& user_stats)
         (!user_stats.quiet || user_stats.max_lines > 0)) {
         std::string content;
         content.reserve(128 * 1024);
-        read_all_fd(STDIN_FILENO, content, user_stats.all_files);
+        read_all_fd(STDIN_FILENO, content, user_stats.all_files, user_stats.max_lines);
         apply_max_lines_limit(content, user_stats.max_lines);
         if (!content.empty()) {
             if (user_stats.quiet) {
@@ -1894,14 +2051,15 @@ size_t search_stdin(UserOptions& user_stats)
         return true;
     };
 
-    if (user_stats.quiet && (user_stats.invert_match || user_stats.max_lines > 0)) {
+    if (user_stats.quiet &&
+        (user_stats.regex_pattern || user_stats.invert_match || user_stats.max_lines > 0)) {
         auto process_quiet_line = [&](const char* line_data, size_t line_len) {
             ++line_num;
             const bool contains = contains_match(line_data, line_len, user_stats);
             const bool selected = user_stats.invert_match ? !contains : contains;
             if (selected) {
                 local_matches = 1;
-                stop = true;
+                stop = user_stats.all_files;
             }
             if (user_stats.max_lines > 0 && line_num >= user_stats.max_lines) {
                 stop = true;
@@ -1909,13 +2067,20 @@ size_t search_stdin(UserOptions& user_stats)
         };
 
         while (!stop) {
-            ssize_t bytes_read = ::read(STDIN_FILENO, buffer.data(), buffer.size());
+            ssize_t bytes_read = read_search_input(
+                STDIN_FILENO, buffer.data(), buffer.size(), nullptr);
 
             if (bytes_read <= 0) {
                 break;
             }
 
-            if (stdin_has_binary(buffer.data(), static_cast<size_t>(bytes_read))) {
+            if (stdin_has_binary(
+                    buffer.data(),
+                    bytes_within_max_lines(
+                        buffer.data(),
+                        static_cast<size_t>(bytes_read),
+                        user_stats.max_lines,
+                        line_num))) {
                 return 0;
             }
 
@@ -1968,7 +2133,12 @@ size_t search_stdin(UserOptions& user_stats)
         size_t carry_len = 0;
         bool found_match = false;
         while (true) {
-            ssize_t bytes_read = ::read(STDIN_FILENO, quiet_buffer.data() + carry_len, LINE_BUFFER_SIZE);
+            ssize_t bytes_read = read_search_input(
+                STDIN_FILENO,
+                quiet_buffer.data() + carry_len,
+                LINE_BUFFER_SIZE,
+                nullptr
+            );
 
             if (bytes_read <= 0) {
                 break;
@@ -1977,7 +2147,10 @@ size_t search_stdin(UserOptions& user_stats)
             const char* data = quiet_buffer.data();
             const size_t size = carry_len + static_cast<size_t>(bytes_read);
 
-            if (stdin_has_binary(data, size)) {
+            if (stdin_has_binary(
+                    data,
+                    bytes_within_max_lines(
+                        data, size, user_stats.max_lines, line_num))) {
                 return 0;
             }
 
@@ -2023,9 +2196,12 @@ size_t search_stdin(UserOptions& user_stats)
 
         if (!read_fd_lines(
                 STDIN_FILENO,
+                nullptr,
                 buffer,
                 pending_line,
                 user_stats.all_files,
+                user_stats.max_lines,
+                line_num,
                 stop,
                 process_count_line)) {
             output.clear();
@@ -2048,7 +2224,7 @@ size_t search_stdin(UserOptions& user_stats)
             }
         };
 
-        auto emit_occurrence = [&](size_t match_line_num, const char* hit) {
+        auto emit_occurrence = [&](size_t match_line_num, const char* hit, size_t match_len) {
             if (user_stats.line_number_print) {
                 if (user_stats.cool_colors) {
                     output.append(user_stats.colors.line);
@@ -2064,10 +2240,10 @@ size_t search_stdin(UserOptions& user_stats)
 
             if (user_stats.cool_colors) {
                 output.append(user_stats.colors.match);
-                output.append(hit, pattern_len);
+                output.append(hit, match_len);
                 output.append(RESET);
             } else {
-                output.append(hit, pattern_len);
+                output.append(hit, match_len);
             }
             output.append(user_stats.add_newline ? "\n\n" : "\n");
             ++local_matches;
@@ -2076,7 +2252,7 @@ size_t search_stdin(UserOptions& user_stats)
 
         auto process_only_matching_line = [&](const char* line_data, size_t line_len) {
             ++line_num;
-            if (pattern_len == 0) {
+            if (!user_stats.regex_pattern && pattern_len == 0) {
                 ++local_matches;
                 if (user_stats.max_lines > 0 && line_num >= user_stats.max_lines) {
                     stop = true;
@@ -2084,19 +2260,33 @@ size_t search_stdin(UserOptions& user_stats)
                 return;
             }
 
-            const char* scan_pos = line_data;
-            size_t remaining = line_len;
+            size_t scan_offset = 0;
+            const size_t matches_before = local_matches;
+            bool found_match = false;
 
-            while (remaining >= pattern_len) {
-                const char* hit = find_match(scan_pos, remaining, user_stats);
+            while (scan_offset <= line_len &&
+                   line_len - scan_offset >= (user_stats.regex_pattern ? 0 : pattern_len)) {
+                size_t match_len = pattern_len;
+                const char* hit = find_match_from(
+                    line_data, line_len, scan_offset, user_stats, &match_len);
                 if (hit == nullptr) {
                     break;
                 }
+                found_match = true;
 
-                emit_occurrence(line_num, hit);
-                const size_t advance = static_cast<size_t>(hit - scan_pos) + pattern_len;
-                scan_pos += advance;
-                remaining -= advance;
+                if (match_len > 0) {
+                    emit_occurrence(line_num, hit, match_len);
+                }
+                const size_t hit_offset = static_cast<size_t>(hit - line_data);
+                const size_t next_offset = hit_offset + (match_len > 0 ? match_len : 1);
+                if (next_offset > line_len) {
+                    break;
+                }
+                scan_offset = next_offset;
+            }
+
+            if (found_match && local_matches == matches_before) {
+                ++local_matches;
             }
 
             if (user_stats.max_lines > 0 && line_num >= user_stats.max_lines) {
@@ -2105,13 +2295,20 @@ size_t search_stdin(UserOptions& user_stats)
         };
 
         while (!stop) {
-            ssize_t bytes_read = ::read(STDIN_FILENO, buffer.data(), buffer.size());
+            ssize_t bytes_read = read_search_input(
+                STDIN_FILENO, buffer.data(), buffer.size(), nullptr);
 
             if (bytes_read <= 0) {
                 break;
             }
 
-            if (stdin_has_binary(buffer.data(), static_cast<size_t>(bytes_read))) {
+            if (stdin_has_binary(
+                    buffer.data(),
+                    bytes_within_max_lines(
+                        buffer.data(),
+                        static_cast<size_t>(bytes_read),
+                        user_stats.max_lines,
+                        line_num))) {
                 return 0;
             }
 
@@ -2270,13 +2467,20 @@ size_t search_stdin(UserOptions& user_stats)
     };
 
     while (!stop) {
-        ssize_t bytes_read = ::read(STDIN_FILENO, buffer.data(), buffer.size());
+        ssize_t bytes_read = read_search_input(
+            STDIN_FILENO, buffer.data(), buffer.size(), nullptr);
 
         if (bytes_read <= 0) {
             break;
         }
 
-        if (stdin_has_binary(buffer.data(), static_cast<size_t>(bytes_read))) {
+        if (stdin_has_binary(
+                buffer.data(),
+                bytes_within_max_lines(
+                    buffer.data(),
+                    static_cast<size_t>(bytes_read),
+                    user_stats.max_lines,
+                    line_num))) {
             return 0;
         }
 

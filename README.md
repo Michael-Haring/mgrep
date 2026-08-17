@@ -71,14 +71,15 @@ enabled automatically when stdout is a terminal and line-oriented output is requ
 18. --files-from0 FILE / --null-files-from FILE Reads NUL-delimited input file paths from FILE
 19. -t / --theme THEME Select a named color theme: blue, red, green, purple, cyan, yellow,
 orange, pink, mono, bright, gruvbox, nord, dracula, nebula.
-20. --no-color Disables ANSI color output.
-21. --literal Treats every pattern character literally. By default, patterns containing
-regex metacharacters use RE2 syntax; plain patterns retain the fast literal matcher.
-22. --colors COMPONENT:ATTR:VALUE Overrides colors. Example: --colors match:fg:magenta
-23. -n Adds an aditional newline between pattern finds. Default is 1 like grep
-24. -l Prints the line number of the file the pattern was found
-25. -s Prints the line of source cose that contained the pattern
-26. -a Searches ALL files. A handful are skipped by default:
+20. --themes Prints fake search results in every built-in theme.
+21. --no-color Disables ANSI color output.
+22. --literal Treats every pattern character literally. Patterns use RE2 syntax by
+default; plain patterns are detected automatically and retain the fast literal matcher.
+23. --colors COMPONENT:ATTR:VALUE Overrides colors. Example: --colors match:fg:magenta
+24. -n Adds an aditional newline between pattern finds. Default is 1 like grep
+25. -l Prints the line number of the file the pattern was found
+26. -s Prints the line of source cose that contained the pattern
+27. -a Searches ALL files. A handful are skipped by default:
    - no extension
    - .so
    - .a
@@ -92,6 +93,21 @@ regex metacharacters use RE2 syntax; plain patterns retain the fast literal matc
    - .png
    - .jpg
    - .pdf
+28. --max-depth NUM Limits directory traversal to NUM path levels and enables recursive mode.
+The explicit search root is depth 0, so depth 1 includes files directly inside it.
+29. --null Terminates path-only and `--files` output records with NUL bytes. Pair it
+with `--no-color` when passing paths to tools such as `xargs -0`.
+30. --file NAME Recursively finds files whose basename exactly matches NAME. It does
+not interpret wildcards, may be repeated, and defaults to searching from `.`.
+
+For example, find every `main.cpp` below the current directory:
+```bash
+mgrep --file main.cpp .
+```
+Use `--glob` instead when the filename or path is only partially known:
+```bash
+mgrep --files --glob '*main*' .
+```
 
 
 # Below this will be updated when I am ready.

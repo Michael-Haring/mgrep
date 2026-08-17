@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cerrno>
+#include <cstring>
 #include <dirent.h>
 #include <iostream>
 #include <iterator>
@@ -16,6 +17,14 @@
 using std::cout;
 
 namespace {
+
+void report_directory_error(const std::string& path)
+{
+    const int error = errno;
+    search_error.store(true, std::memory_order_relaxed);
+    std::cerr << "ERROR: could not read directory: " << path
+              << ": " << std::strerror(error) << "\n";
+}
 
 void write_direct_stdout(std::string& output, const DirectOutputPiece* pieces, size_t piece_count)
 {
@@ -98,7 +107,7 @@ void append_list_file(SearchWork& work, const std::string& path)
     } else {
         work.list_output += path;
     }
-    work.list_output.push_back('\n');
+    work.list_output.push_back(work.user_stats.null_output ? '\0' : '\n');
 
     if (work.list_output.size() >= OUTPUT_FLUSH_SIZE) {
         cout << work.list_output;
@@ -325,20 +334,26 @@ void collect_search_files(
         return;
     }
 
+    if (work.user_stats.max_depth == 0) {
+        return;
+    }
+
     std::string path = root;
     if (work.user_stats.recursive_mode) {
         collect_search_files_recursive_parallel(path, work);
     } else {
-        collect_search_files_recursive(path, work);
+        collect_search_files_recursive(path, work, 0);
     }
 }
 
 void collect_search_files_recursive(
     std::string& root,
-    SearchWork& work
+    SearchWork& work,
+    unsigned int depth
 ) {
     DIR* dir = ::opendir(root.c_str());
     if (dir == nullptr) {
+        report_directory_error(root);
         return;
     }
 
@@ -399,7 +414,9 @@ void collect_search_files_recursive(
 
             add_search_path(work, root);
         }
-        else if (work.user_stats.recursive_mode && type == DT_DIR) {
+        else if (work.user_stats.recursive_mode &&
+                 depth + 1 < work.user_stats.max_depth &&
+                 type == DT_DIR) {
             if (!work.user_stats.all_files &&
                 (should_skip_dir(name) || should_ignore_dir(name, work.user_stats.ignore_rules))) {
                 continue;
@@ -415,7 +432,7 @@ void collect_search_files_recursive(
                 continue;
             }
 
-            collect_search_files_recursive(root, work);
+            collect_search_files_recursive(root, work, depth + 1);
         }
     }
 
@@ -425,10 +442,12 @@ void collect_search_files_recursive(
 
 void collect_search_files_one_dir(
     std::string& root,
+    unsigned int depth,
     DirectoryTraversalWork& traversal
 ) {
     DIR* dir = ::opendir(root.c_str());
     if (dir == nullptr) {
+        report_directory_error(root);
         return;
     }
 
@@ -494,7 +513,7 @@ void collect_search_files_one_dir(
 
             found_files.push_back(root);
         }
-        else if (type == DT_DIR) {
+        else if (depth + 1 < traversal.search.user_stats.max_depth && type == DT_DIR) {
             if (!traversal.search.user_stats.all_files &&
                 (should_skip_dir(name) ||
                  should_ignore_dir(name, traversal.search.user_stats.ignore_rules))) {
@@ -527,7 +546,7 @@ void collect_search_files_one_dir(
           traversal.search.stop_requested.load(std::memory_order_relaxed))) {
         std::lock_guard<std::mutex> lock(traversal.dirs_mtx);
         for (auto& child : child_dirs) {
-            traversal.dirs.push(std::move(child));
+            traversal.dirs.emplace(std::move(child), depth + 1);
         }
         traversal.cv.notify_all();
     }
@@ -539,6 +558,7 @@ void traverse_dir_worker(DirectoryTraversalWork& traversal)
 {
     while (true) {
         std::string dir_path;
+        unsigned int depth = 0;
 
         {
             std::unique_lock<std::mutex> lock(traversal.dirs_mtx);
@@ -559,12 +579,13 @@ void traverse_dir_worker(DirectoryTraversalWork& traversal)
                 return;
             }
 
-            dir_path = std::move(traversal.dirs.front());
+            dir_path = std::move(traversal.dirs.front().first);
+            depth = traversal.dirs.front().second;
             traversal.dirs.pop();
             ++traversal.active_dirs;
         }
 
-        collect_search_files_one_dir(dir_path, traversal);
+        collect_search_files_one_dir(dir_path, depth, traversal);
 
         {
             std::lock_guard<std::mutex> lock(traversal.dirs_mtx);
@@ -593,7 +614,7 @@ void collect_search_files_recursive_parallel(
     }
 
     DirectoryTraversalWork traversal(work);
-    traversal.dirs.push(root);
+    traversal.dirs.emplace(root, 0);
 
     std::vector<std::thread> walkers;
     walkers.reserve(num_walkers);

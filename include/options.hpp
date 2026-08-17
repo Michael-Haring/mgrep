@@ -3,9 +3,10 @@
 #include "colors.hpp"
 #include "ignore.hpp"
 
+#include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
-#include <memory>
 #include <utility>
 #include <vector>
 
@@ -34,6 +35,7 @@ struct UserOptions {
     std::string folded_pattern = "";
     std::shared_ptr<const re2::RE2> compiled_regex;
     std::vector<std::string> allowed_extensions;
+    std::vector<std::string> exact_filenames;
     std::vector<std::string> include_globs;
     std::vector<std::string> exclude_globs;
     std::vector<std::string> files_from;
@@ -58,9 +60,12 @@ struct UserOptions {
     bool regex_pattern = false;
     bool heading = false;
     bool list_files = false;
+    bool show_themes = false;
+    bool null_output = false;
     unsigned int print_before_source = 0;
     unsigned int print_after_source = 0;
     unsigned int max_lines = 0;
+    unsigned int max_depth = std::numeric_limits<unsigned int>::max();
 };
 
 struct ParseResult {

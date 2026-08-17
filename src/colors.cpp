@@ -1,65 +1,116 @@
 #include "colors.hpp"
 
+#include <iostream>
+
+namespace {
+
+constexpr std::string_view THEME_NAMES[] = {
+    "blue", "red", "green", "purple", "cyan", "yellow", "orange", "pink",
+    "mono", "bright", "gruvbox", "nord", "dracula", "nebula"
+};
+
+void print_preview_line(
+    const ColorTheme& colors,
+    bool cool_colors,
+    std::string_view line_number,
+    std::string_view before_match,
+    std::string_view match,
+    std::string_view after_match
+)
+{
+    if (!cool_colors) {
+        std::cout << "  " << line_number << ": " << before_match << match << after_match << '\n';
+        return;
+    }
+
+    std::cout << "  " << colors.line << line_number << ":" << RESET << ' '
+              << colors.source << before_match
+              << colors.match << match << RESET
+              << colors.source << after_match << RESET << '\n';
+}
+
+} // namespace
+
 bool parse_color_theme(std::string_view name, ColorTheme& colors)
 {
     if (name == "blue") {
-        colors = {PATH_GREY, FILE_BLUE, LINE_TEAL, MATCH_BLUE, ""};
+        colors = {PATH_GREY, FILE_BLUE, LINE_TEAL, MATCH_BLUE, SOURCE_GREY};
         return true;
     }
     if (name == "red") {
-        colors = {PATH_GREY, FILE_RED, LINE_RED, MATCH_RED, ""};
+        colors = {PATH_GREY, FILE_RED, LINE_RED, MATCH_RED, SOURCE_GREY};
         return true;
     }
     if (name == "green") {
-        colors = {PATH_GREY, FILE_GREEN, LINE_GREEN, MATCH_GREEN, ""};
+        colors = {PATH_GREY, FILE_GREEN, LINE_GREEN, MATCH_GREEN, SOURCE_GREY};
         return true;
     }
     if (name == "purple") {
-        colors = {PATH_GREY, FILE_PURPLE, LINE_PURPLE, MATCH_PURPLE, ""};
+        colors = {PATH_GREY, FILE_PURPLE, LINE_PURPLE, MATCH_PURPLE, SOURCE_GREY};
         return true;
     }
     if (name == "cyan") {
-        colors = {PATH_GREY, FILE_CYAN, LINE_CYAN, MATCH_CYAN, ""};
+        colors = {PATH_GREY, FILE_CYAN, LINE_CYAN, MATCH_CYAN, SOURCE_GREY};
         return true;
     }
     if (name == "yellow") {
-        colors = {PATH_GREY, FILE_YELLOW, LINE_YELLOW, MATCH_YELLOW, ""};
+        colors = {PATH_GREY, FILE_YELLOW, LINE_YELLOW, MATCH_YELLOW, SOURCE_GREY};
         return true;
     }
     if (name == "orange") {
-        colors = {PATH_GREY, FILE_ORANGE, LINE_ORANGE, MATCH_ORANGE, ""};
+        colors = {PATH_GREY, FILE_ORANGE, LINE_ORANGE, MATCH_ORANGE, SOURCE_GREY};
         return true;
     }
     if (name == "pink") {
-        colors = {PATH_GREY, FILE_PINK, LINE_PINK, MATCH_PINK, ""};
+        colors = {PATH_GREY, FILE_PINK, LINE_PINK, MATCH_PINK, SOURCE_GREY};
         return true;
     }
     if (name == "mono") {
-        colors = {PATH_GREY, FILE_WHITE, LINE_WHITE, MATCH_WHITE, ""};
+        colors = {PATH_GREY, FILE_WHITE, LINE_WHITE, MATCH_WHITE, SOURCE_GREY};
         return true;
     }
     if (name == "bright") {
-        colors = {LINE_WHITE, FILE_CYAN, FILE_YELLOW, MATCH_PINK, ""};
+        colors = {LINE_WHITE, FILE_CYAN, FILE_YELLOW, MATCH_PINK, SOURCE_GREY};
         return true;
     }
     if (name == "gruvbox") {
-        colors = {PATH_GREY, FILE_GRUVBOX, LINE_GRUVBOX, MATCH_GRUVBOX, ""};
+        colors = {PATH_GREY, FILE_GRUVBOX, LINE_GRUVBOX, MATCH_GRUVBOX, SOURCE_GREY};
         return true;
     }
     if (name == "nord") {
-        colors = {PATH_GREY, FILE_NORD, LINE_NORD, MATCH_NORD, ""};
+        colors = {PATH_GREY, FILE_NORD, LINE_NORD, MATCH_NORD, SOURCE_GREY};
         return true;
     }
     if (name == "dracula") {
-        colors = {PATH_GREY, FILE_DRACULA, LINE_DRACULA, MATCH_DRACULA, ""};
+        colors = {PATH_GREY, FILE_DRACULA, LINE_DRACULA, MATCH_DRACULA, SOURCE_GREY};
         return true;
     }
     if (name == "nebula") {
-        colors = {PATH_GREY, FILE_NEBULA, LINE_NEBULA, MATCH_NEBULA, ""};
+        colors = {PATH_GREY, FILE_NEBULA, LINE_NEBULA, MATCH_NEBULA, SOURCE_GREY};
         return true;
     }
 
     return false;
+}
+
+void print_theme_previews(bool cool_colors)
+{
+    for (std::string_view name : THEME_NAMES) {
+        ColorTheme colors;
+        parse_color_theme(name, colors);
+
+        if (cool_colors) {
+            std::cout << colors.file << name << RESET << '\n'
+                      << "  " << colors.path << "src/" << RESET
+                      << colors.file << "search.cpp" << RESET << '\n';
+        } else {
+            std::cout << name << "\n  src/search.cpp\n";
+        }
+
+        print_preview_line(colors, cool_colors, "42", "if (", "pattern_matches", "(line)) {");
+        print_preview_line(colors, cool_colors, "87", "    ", "matches", " += search_file(path);");
+        std::cout << '\n';
+    }
 }
 
 int parse_color_value(std::string_view value)
