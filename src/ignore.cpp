@@ -130,11 +130,13 @@ bool should_skip_file(std::string_view name)
                 ext_equals(".bmp") || ext_equals(".ico") || ext_equals(".ttf") ||
                 ext_equals(".otf");
         case 5:
-            return ext_equals(".jpeg") || ext_equals(".webp") || ext_equals(".class");
+            return ext_equals(".jpeg") || ext_equals(".webp");
         case 6:
-            return ext_equals(".cmake") || ext_equals(".dylib");
+            return ext_equals(".class") || ext_equals(".cmake") || ext_equals(".dylib");
         case 7:
-            return ext_equals(".sqlite") || ext_equals(".sqlite3");
+            return ext_equals(".sqlite");
+        case 8:
+            return ext_equals(".sqlite3");
         default:
             return false;
     }

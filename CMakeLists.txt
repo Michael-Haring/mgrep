@@ -2,8 +2,25 @@ cmake_minimum_required(VERSION 3.10)
 
 project(mgrep LANGUAGES CXX)
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(RE2 REQUIRED IMPORTED_TARGET re2)
+find_package(PkgConfig QUIET)
+if(NOT PkgConfig_FOUND)
+    message(FATAL_ERROR
+        "pkg-config is required to locate RE2.\n"
+        "Install the build dependencies with one of:\n"
+        "  Debian/Ubuntu: sudo apt install pkg-config libre2-dev\n"
+        "  Fedora:        sudo dnf install pkgconf-pkg-config re2-devel\n"
+        "  Arch Linux:    sudo pacman -S pkgconf re2")
+endif()
+
+pkg_check_modules(RE2 QUIET IMPORTED_TARGET re2)
+if(NOT RE2_FOUND)
+    message(FATAL_ERROR
+        "RE2 development files were not found.\n"
+        "Install them with one of:\n"
+        "  Debian/Ubuntu: sudo apt install libre2-dev\n"
+        "  Fedora:        sudo dnf install re2-devel\n"
+        "  Arch Linux:    sudo pacman -S re2")
+endif()
 
 include(GNUInstallDirs)
 

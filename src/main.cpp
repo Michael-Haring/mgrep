@@ -13,6 +13,17 @@
 
 using std::cout;
 
+int finish_program(int exit_code)
+{
+    cout.flush();
+    if (cout) {
+        return exit_code;
+    }
+
+    std::cerr << "ERROR: could not write standard output\n";
+    return MGREP_EXIT_ERROR;
+}
+
 bool check_user_root(std::filesystem::path& root)
 {
     std::error_code ec;
@@ -129,7 +140,7 @@ int main(int argc, char* argv[])
     UserOptions user_stats;
     const ParseResult parse_result = parse_user_options(argc, argv, user_stats);
     if (!parse_result.ok) {
-        return parse_result.exit_code;
+        return finish_program(parse_result.exit_code);
     }
     apply_terminal_output_defaults(user_stats, ::isatty(STDOUT_FILENO));
 
@@ -146,7 +157,7 @@ int main(int argc, char* argv[])
     if (!has_file_list_input && !has_input_operands && !::isatty(STDIN_FILENO)) {
         if (user_stats.null_output) {
             std::cerr << "ERROR: --null cannot be used when searching standard input\n";
-            return MGREP_EXIT_ERROR;
+            return finish_program(MGREP_EXIT_ERROR);
         }
         search_stdin(user_stats);
 
@@ -156,9 +167,9 @@ int main(int argc, char* argv[])
 
         if (search_error.load(std::memory_order_relaxed) &&
             !(user_stats.quiet && matches > 0)) {
-            return MGREP_EXIT_ERROR;
+            return finish_program(MGREP_EXIT_ERROR);
         }
-        return exit_code_from_matches();
+        return finish_program(exit_code_from_matches());
     }
 
     if (!user_stats.all_files) {
@@ -267,12 +278,12 @@ int main(int argc, char* argv[])
 
     if ((had_error || search_error.load(std::memory_order_relaxed)) &&
         !(user_stats.quiet && matches > 0)) {
-        return MGREP_EXIT_ERROR;
+        return finish_program(MGREP_EXIT_ERROR);
     }
 
     if (user_stats.list_files) {
-        return MGREP_EXIT_MATCH_FOUND;
+        return finish_program(MGREP_EXIT_MATCH_FOUND);
     }
 
-    return exit_code_from_matches();
+    return finish_program(exit_code_from_matches());
 }

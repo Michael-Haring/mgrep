@@ -60,9 +60,21 @@ void write_direct_stdout(std::string& output, const DirectOutputPiece* pieces, s
             if (errno == EINTR) {
                 continue;
             }
+            const int error = errno;
+            static std::atomic<bool> error_reported{false};
+            search_error.store(true, std::memory_order_relaxed);
+            if (!error_reported.exchange(true, std::memory_order_relaxed)) {
+                std::cerr << "ERROR: could not write standard output: "
+                          << std::strerror(error) << "\n";
+            }
             break;
         }
         if (bytes_written == 0) {
+            static std::atomic<bool> error_reported{false};
+            search_error.store(true, std::memory_order_relaxed);
+            if (!error_reported.exchange(true, std::memory_order_relaxed)) {
+                std::cerr << "ERROR: could not write standard output\n";
+            }
             break;
         }
 
@@ -113,6 +125,19 @@ void append_list_file(SearchWork& work, const std::string& path)
         cout << work.list_output;
         work.list_output.clear();
     }
+}
+
+bool list_pattern_matches(std::string_view path, const UserOptions& user_stats)
+{
+    if (!user_stats.files_pattern_search) {
+        return true;
+    }
+
+    const size_t slash_pos = path.find_last_of('/');
+    const std::string_view name = slash_pos == std::string_view::npos
+        ? path
+        : path.substr(slash_pos + 1);
+    return name.find(user_stats.pattern) != std::string_view::npos;
 }
 
 void flush_list_files(SearchWork& work)
@@ -186,7 +211,9 @@ void push_file_batch(
 void add_search_path(SearchWork& work, const std::string& path)
 {
     if (work.user_stats.list_files) {
-        append_list_file(work, path);
+        if (list_pattern_matches(path, work.user_stats)) {
+            append_list_file(work, path);
+        }
         return;
     }
 
@@ -233,7 +260,9 @@ void add_search_paths(SearchWork& work, std::vector<std::string>& paths)
 {
     if (work.user_stats.list_files) {
         for (const auto& path : paths) {
-            append_list_file(work, path);
+            if (list_pattern_matches(path, work.user_stats)) {
+                append_list_file(work, path);
+            }
         }
         paths.clear();
         return;
@@ -432,6 +461,11 @@ void collect_search_files_recursive(
                 continue;
             }
 
+            if (work.user_stats.files_pattern_search &&
+                list_pattern_matches(root, work.user_stats)) {
+                append_list_file(work, root);
+            }
+
             collect_search_files_recursive(root, work, depth + 1);
         }
     }
@@ -528,6 +562,12 @@ void collect_search_files_one_dir(
 
             if (exclude_glob_matches_directory(root, traversal.search.user_stats)) {
                 continue;
+            }
+
+            if (traversal.search.user_stats.files_pattern_search &&
+                list_pattern_matches(root, traversal.search.user_stats)) {
+                std::lock_guard<std::mutex> lock(traversal.search_mtx);
+                append_list_file(traversal.search, root);
             }
 
             child_dirs.push_back(root);

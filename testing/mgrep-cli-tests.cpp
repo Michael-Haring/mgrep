@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -191,6 +192,38 @@ std::string display_path(const std::filesystem::path& path)
     return path.parent_path().string() + "/\t" + path.filename().string();
 }
 
+bool is_valid_utf8(std::string_view value)
+{
+    size_t pos = 0;
+    while (pos < value.size()) {
+        const unsigned char lead = static_cast<unsigned char>(value[pos]);
+        size_t continuation_count = 0;
+        if (lead <= 0x7F) {
+            ++pos;
+            continue;
+        } else if (lead >= 0xC2 && lead <= 0xDF) {
+            continuation_count = 1;
+        } else if (lead >= 0xE0 && lead <= 0xEF) {
+            continuation_count = 2;
+        } else if (lead >= 0xF0 && lead <= 0xF4) {
+            continuation_count = 3;
+        } else {
+            return false;
+        }
+
+        if (pos + continuation_count >= value.size()) {
+            return false;
+        }
+        for (size_t i = 1; i <= continuation_count; ++i) {
+            if ((static_cast<unsigned char>(value[pos + i]) & 0xC0U) != 0x80U) {
+                return false;
+            }
+        }
+        pos += continuation_count + 1;
+    }
+    return true;
+}
+
 struct CliFixture {
     std::filesystem::path root;
 
@@ -349,25 +382,24 @@ TEST_CASE("All-files mode includes files skipped by default")
     REQUIRE(output.find(display_path(fixture.root / "binary.dat")) != std::string::npos);
 }
 
-TEST_CASE("Files option lists searchable files without a pattern")
+TEST_CASE("Files option finds file and directory names containing a pattern")
 {
     CliFixture fixture;
     int exit_code = -1;
 
-    const std::string output = run_mgrep({
+    std::string output = run_mgrep({
         "--files",
+        "three",
         fixture.root.string()
     }, &exit_code);
 
     REQUIRE(exit_code == 0);
-    REQUIRE(output.find((fixture.root / "top.txt").string() + "\n") != std::string::npos);
-    REQUIRE(output.find((fixture.root / "src" / "one.txt").string() + "\n") != std::string::npos);
-    REQUIRE(output.find((fixture.root / "src" / "nested" / "three.cpp").string() + "\n") != std::string::npos);
-    REQUIRE(output.find((fixture.root / "skip.bin").string()) == std::string::npos);
-    REQUIRE(output.find((fixture.root / "no_extension").string()) == std::string::npos);
-    REQUIRE(output.find((fixture.root / ".git" / "hidden.txt").string()) == std::string::npos);
-    REQUIRE(output.find((fixture.root / "build" / "generated.txt").string()) == std::string::npos);
+    REQUIRE(output == (fixture.root / "src" / "nested" / "three.cpp").string() + "\n");
     REQUIRE(output.find("needle here") == std::string::npos);
+
+    output = run_mgrep({"--files", "src", fixture.root.string()}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == (fixture.root / "src").string() + "\n");
 }
 
 TEST_CASE("Files option composes with path filters and all-files mode")
@@ -377,6 +409,7 @@ TEST_CASE("Files option composes with path filters and all-files mode")
 
     std::string output = run_mgrep({
         "--files",
+        "three",
         "--ext", "cpp",
         fixture.root.string()
     }, &exit_code);
@@ -387,6 +420,7 @@ TEST_CASE("Files option composes with path filters and all-files mode")
 
     output = run_mgrep({
         "--files",
+        "skip",
         "-a",
         "--glob", "*.bin",
         fixture.root.string()
@@ -397,18 +431,17 @@ TEST_CASE("Files option composes with path filters and all-files mode")
     REQUIRE(output.find((fixture.root / "binary.dat").string()) == std::string::npos);
 }
 
-TEST_CASE("Files option defaults to current directory")
+TEST_CASE("Files option requires a pattern and search root")
 {
     int exit_code = -1;
 
-    const std::string output = run_mgrep({
-        "--files",
-        "-a",
-        "--glob", "mgrep"
-    }, &exit_code);
+    std::string output = run_mgrep({"--files"}, &exit_code);
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("requires a filename pattern and search root") != std::string::npos);
 
-    REQUIRE(exit_code == 0);
-    REQUIRE(output.find("./mgrep\n") != std::string::npos);
+    output = run_mgrep({"--files", "main"}, &exit_code);
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("requires a search root after the filename pattern") != std::string::npos);
 }
 
 TEST_CASE("Files option does not search explicit stdin operand")
@@ -416,7 +449,7 @@ TEST_CASE("Files option does not search explicit stdin operand")
     int exit_code = -1;
     const std::string output = run_mgrep_with_stdin(
         "needle from stdin\n",
-        {"--files", "-"},
+        {"--files", "needle", "-"},
         &exit_code
     );
 
@@ -507,12 +540,12 @@ TEST_CASE("Max-depth limits traversal and enables recursive search")
     CliFixture fixture;
 
     std::string output = run_mgrep({
-        "--files", "--max-depth", "0", fixture.root.string()
+        "--files", "", "--max-depth", "0", fixture.root.string()
     });
     REQUIRE(output.empty());
 
     output = run_mgrep({
-        "--files", "--max-depth", "1", fixture.root.string()
+        "--files", "", "--max-depth", "1", fixture.root.string()
     });
     REQUIRE(output.find((fixture.root / "top.txt").string() + "\n") != std::string::npos);
     REQUIRE(output.find((fixture.root / "src" / "one.txt").string()) == std::string::npos);
@@ -547,7 +580,7 @@ TEST_CASE("Null output safely delimits matching paths and file listings")
     REQUIRE(output == newline_path.string() + std::string(1, '\0'));
 
     output = run_mgrep({
-        "--null", "--files", "--glob", "*break.txt", fixture.root.string()
+        "--null", "--files", "break", fixture.root.string()
     });
     REQUIRE(output == newline_path.string() + std::string(1, '\0'));
 }
@@ -701,6 +734,19 @@ TEST_CASE("Glob option supports recursive double-star directories")
     REQUIRE(output.find("needle src hpp\n") == std::string::npos);
 }
 
+TEST_CASE("Glob matching handles long star runs without recursion")
+{
+    CliFixture fixture;
+    const std::string long_glob(100000, '*');
+    int exit_code = -1;
+    const std::string output = run_mgrep({
+        "--glob", long_glob, "needle", (fixture.root / "top.txt").string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == display_path(fixture.root / "top.txt") + "\n");
+}
+
 TEST_CASE("Exclude-glob removes matching paths")
 {
     CliFixture fixture;
@@ -825,14 +871,20 @@ TEST_CASE("Default traversal skips binary extensions case-insensitively")
 
     write_file(fixture.root / "upper.PNG", "needle uppercase png\n");
     write_file(fixture.root / "upper.ZIP", "needle uppercase zip\n");
+    write_file(fixture.root / "bytecode.CLASS", "needle uppercase class\n");
+    write_file(fixture.root / "records.SQLITE3", "needle uppercase sqlite3\n");
 
     const std::string default_output = run_mgrep({"-r", "needle", fixture.root.string()});
     REQUIRE(default_output.find(display_path(fixture.root / "upper.PNG")) == std::string::npos);
     REQUIRE(default_output.find(display_path(fixture.root / "upper.ZIP")) == std::string::npos);
+    REQUIRE(default_output.find(display_path(fixture.root / "bytecode.CLASS")) == std::string::npos);
+    REQUIRE(default_output.find(display_path(fixture.root / "records.SQLITE3")) == std::string::npos);
 
     const std::string all_files_output = run_mgrep({"-ra", "needle", fixture.root.string()});
     REQUIRE(all_files_output.find(display_path(fixture.root / "upper.PNG")) != std::string::npos);
     REQUIRE(all_files_output.find(display_path(fixture.root / "upper.ZIP")) != std::string::npos);
+    REQUIRE(all_files_output.find(display_path(fixture.root / "bytecode.CLASS")) != std::string::npos);
+    REQUIRE(all_files_output.find(display_path(fixture.root / "records.SQLITE3")) != std::string::npos);
 }
 
 TEST_CASE("Explicit file paths bypass default traversal skips")
@@ -1708,6 +1760,36 @@ TEST_CASE("Files-from searches newline-delimited explicit file paths")
     REQUIRE(output.find(display_path(fixture.root / "src" / "one.txt")) == std::string::npos);
 }
 
+TEST_CASE("Abbreviated long option keeps its argument out of path operands")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::string output = run_mgrep({
+        "--max-dep", "1", "needle", fixture.root.string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find(display_path(fixture.root / "top.txt")) != std::string::npos);
+    REQUIRE(output.find("path does not exist: needle") == std::string::npos);
+}
+
+TEST_CASE("Abbreviated null-files-from remains an ordered file-list operand")
+{
+    CliFixture fixture;
+    const std::filesystem::path list_path = fixture.root / "nul-files.txt";
+    write_file(
+        list_path,
+        (fixture.root / "src" / "one.txt").string() + std::string(1, '\0')
+    );
+    int exit_code = -1;
+    const std::string output = run_mgrep({
+        "--null-files-f", list_path.string(), "needle here"
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == display_path(fixture.root / "src" / "one.txt") + "\n");
+}
+
 TEST_CASE("FF aliases files-from with separate and equals arguments")
 {
     CliFixture fixture;
@@ -2102,6 +2184,36 @@ TEST_CASE("One-line output clips long records around the match")
     REQUIRE(output.find("\xE2\x80\xA6") != std::string::npos);
     REQUIRE(std::count(output.begin(), output.end(), '\n') == 1);
     REQUIRE(output.size() <= 105);
+}
+
+TEST_CASE("One-line clipping preserves UTF-8 boundaries")
+{
+    CliFixture fixture;
+    const std::string repeated_utf8(101, '\0');
+    std::string source;
+    source.reserve(210);
+    for (size_t i = 0; i < repeated_utf8.size(); ++i) {
+        source.append("\xC3\xA9");
+    }
+    source.append("needle\n");
+
+    const std::filesystem::path source_path = fixture.root / "utf8-source.txt";
+    write_file(source_path, source);
+    const std::string source_output = run_mgrep({"-o", "needle", source_path.string()});
+
+    std::string filename;
+    for (size_t i = 0; i < 80; ++i) {
+        filename.append("\xC3\xA9");
+    }
+    filename.append(".txt");
+    const std::filesystem::path path = fixture.root / filename;
+    write_file(path, "needle\n");
+    const std::string path_output = run_mgrep({"-o", "needle", path.string()});
+
+    REQUIRE(is_valid_utf8(source_output));
+    REQUIRE(is_valid_utf8(path_output));
+    REQUIRE(source_output.find("needle") != std::string::npos);
+    REQUIRE(path_output.find("needle") != std::string::npos);
 }
 
 TEST_CASE("Uppercase O retains only-matching behavior")
@@ -2520,6 +2632,32 @@ TEST_CASE("Explicit unreadable directory returns a search error")
 
     REQUIRE(exit_code == 2);
     REQUIRE(output.find("ERROR: could not read directory: " + unreadable_dir.string()) != std::string::npos);
+}
+
+TEST_CASE("Standard output write failures return an error")
+{
+    if (!std::filesystem::exists("/dev/full")) {
+        return;
+    }
+
+    CliFixture fixture;
+    std::string command = "./mgrep --no-color needle ";
+    command += shell_quote((fixture.root / "top.txt").string());
+    command += " > /dev/full 2>/dev/null";
+
+    const int status = std::system(command.c_str());
+    REQUIRE(WIFEXITED(status));
+    REQUIRE(WEXITSTATUS(status) == 2);
+
+    const std::filesystem::path huge_path = fixture.root / "huge-direct-output.txt";
+    write_file(huge_path, std::string(1024 * 1024, 'x') + "needle\n");
+    command = "./mgrep --no-color -as needle ";
+    command += shell_quote(huge_path.string());
+    command += " > /dev/full 2>/dev/null";
+
+    const int direct_status = std::system(command.c_str());
+    REQUIRE(WIFEXITED(direct_status));
+    REQUIRE(WEXITSTATUS(direct_status) == 2);
 }
 
 TEST_CASE("Unreadable descendant directories return a search error")
@@ -3321,6 +3459,34 @@ TEST_CASE("Newline pattern count mode matches across lines")
 
     REQUIRE(exit_code == 0);
     REQUIRE(output == display_path(path) + "\t1\n");
+}
+
+TEST_CASE("Max-lines preserves the final permitted newline for literal matching")
+{
+    CliFixture fixture;
+    int exit_code = -1;
+    const std::filesystem::path path = fixture.root / "max-lines-final-newline.txt";
+    write_file(path, "alpha\nbeta\n");
+
+    std::string output = run_mgrep({
+        "--no-color",
+        "--literal",
+        "-m", "1",
+        "alpha\n",
+        path.string()
+    }, &exit_code);
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == display_path(path) + "\n");
+
+    output = run_mgrep_with_stdin(
+        "alpha\nbeta\n",
+        {"--no-color", "--literal", "-m", "1", "alpha\n"},
+        &exit_code
+    );
+
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == "alpha\n");
 }
 
 TEST_CASE("Newline pattern source mode prints full matching span")

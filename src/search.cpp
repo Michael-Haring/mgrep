@@ -382,9 +382,21 @@ void write_direct_stdout(
             if (errno == EINTR) {
                 continue;
             }
+            const int error = errno;
+            static std::atomic<bool> error_reported{false};
+            search_error.store(true, std::memory_order_relaxed);
+            if (!error_reported.exchange(true, std::memory_order_relaxed)) {
+                std::cerr << "ERROR: could not write standard output: "
+                          << std::strerror(error) << "\n";
+            }
             break;
         }
         if (bytes_written == 0) {
+            static std::atomic<bool> error_reported{false};
+            search_error.store(true, std::memory_order_relaxed);
+            if (!error_reported.exchange(true, std::memory_order_relaxed)) {
+                std::cerr << "ERROR: could not write standard output\n";
+            }
             break;
         }
 
@@ -776,7 +788,7 @@ void apply_max_lines_limit(std::string& content, unsigned int max_lines)
 
         ++lines_seen;
         if (lines_seen == max_lines) {
-            content.resize(i);
+            content.resize(i + 1);
             return;
         }
     }
@@ -975,7 +987,15 @@ size_t emit_multiline_content_matches(
             output.append(content.data() + after_start, context_end - after_start);
         }
 
-        output.append(user_stats.add_newline ? "\n\n" : "\n");
+        const bool source_ends_with_newline =
+            emits_source && context_end > 0 && content[context_end - 1] == '\n';
+        if (source_ends_with_newline) {
+            if (user_stats.add_newline) {
+                output.push_back('\n');
+            }
+        } else {
+            output.append(user_stats.add_newline ? "\n\n" : "\n");
+        }
         const size_t consumed_output_end =
             context_end < content.size() && content[context_end] == '\n'
                 ? context_end + 1

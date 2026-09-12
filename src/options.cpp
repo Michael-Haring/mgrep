@@ -3,6 +3,7 @@
 #include <re2/re2.h>
 
 #include <cerrno>
+#include <array>
 #include <climits>
 #include <cstdint>
 #include <cstdlib>
@@ -46,18 +47,29 @@ bool short_option_takes_argument(char option)
 
 bool long_option_takes_argument(std::string_view option)
 {
-    return option == "--colors" ||
-        option == "--ff" ||
-        option == "--files-from" ||
-        option == "--files-from0" ||
-        option == "--null-files-from" ||
-        option == "--theme" ||
-        option == "--type" ||
-        option == "--ext" ||
-        option == "--glob" ||
-        option == "--exclude-glob" ||
-        option == "--max-depth" ||
-        option == "--file";
+    static constexpr std::array<std::string_view, 12> options = {
+        "--colors", "--ff", "--files-from", "--files-from0",
+        "--null-files-from", "--theme", "--type", "--ext", "--glob",
+        "--exclude-glob", "--max-depth", "--file"
+    };
+
+    for (const std::string_view candidate : options) {
+        if (option == candidate) {
+            return true;
+        }
+    }
+    if (option == "--null") {
+        return false;
+    }
+
+    size_t matches = 0;
+    for (const std::string_view candidate : options) {
+        if (candidate.size() >= option.size() &&
+            candidate.compare(0, option.size(), option) == 0) {
+            ++matches;
+        }
+    }
+    return matches == 1;
 }
 
 bool append_file_list_operand(
@@ -73,7 +85,11 @@ bool append_file_list_operand(
         : option.substr(0, equals_pos);
 
     const bool is_files_from = name == "--files-from" || name == "--ff";
-    const bool is_files_from0 = name == "--files-from0" || name == "--null-files-from";
+    const bool abbreviated_null_files_from =
+        name.size() > std::string_view("--null").size() &&
+        std::string_view("--null-files-from").compare(0, name.size(), name) == 0;
+    const bool is_files_from0 = name == "--files-from0" ||
+        name == "--null-files-from" || abbreviated_null_files_from;
     if (!is_files_from && !is_files_from0) {
         return false;
     }
@@ -135,7 +151,7 @@ void record_input_operands(const std::vector<std::string>& original_args, UserOp
             continue;
         }
 
-        if (!user_stats.list_files && !pattern_seen) {
+        if ((!user_stats.list_files || user_stats.files_pattern_search) && !pattern_seen) {
             pattern_seen = true;
             continue;
         }
@@ -414,59 +430,58 @@ bool extension_filter_allows(std::string_view path, const UserOptions& user_stat
 
 bool glob_matches(std::string_view pattern, std::string_view path)
 {
-    const size_t rows = pattern.size() + 1;
     const size_t cols = path.size() + 1;
-    std::vector<int8_t> memo(rows * cols, -1);
+    std::array<std::vector<uint8_t>, 4> rows;
+    for (auto& row : rows) {
+        row.resize(cols);
+    }
+    rows[pattern.size() % rows.size()][path.size()] = 1;
 
-    auto memo_at = [&](size_t pattern_pos, size_t path_pos) -> int8_t& {
-        return memo[(pattern_pos * cols) + path_pos];
-    };
+    for (size_t pattern_pos = pattern.size(); pattern_pos-- > 0;) {
+        auto& current = rows[pattern_pos % rows.size()];
+        std::fill(current.begin(), current.end(), uint8_t{0});
 
-    std::function<bool(size_t, size_t)> match_at = [&](size_t pattern_pos, size_t path_pos) -> bool {
-        int8_t& cached = memo_at(pattern_pos, path_pos);
-        if (cached != -1) {
-            return cached == 1;
-        }
-
-        bool matched = false;
-        if (pattern_pos == pattern.size()) {
-            matched = path_pos == path.size();
-        } else if (pattern_pos + 2 < pattern.size() &&
-                   pattern[pattern_pos] == '*' &&
-                   pattern[pattern_pos + 1] == '*' &&
-                   pattern[pattern_pos + 2] == '/') {
-            matched = match_at(pattern_pos + 3, path_pos);
-            for (size_t next = path_pos; !matched && next < path.size(); ++next) {
-                if (path[next] == '/') {
-                    matched = match_at(pattern_pos + 3, next + 1);
+        if (pattern_pos + 2 < pattern.size() &&
+            pattern[pattern_pos] == '*' &&
+            pattern[pattern_pos + 1] == '*' &&
+            pattern[pattern_pos + 2] == '/') {
+            const auto& next = rows[(pattern_pos + 3) % rows.size()];
+            bool suffix_match = false;
+            for (size_t path_pos = path.size() + 1; path_pos-- > 0;) {
+                if (path_pos < path.size() && path[path_pos] == '/' && next[path_pos + 1]) {
+                    suffix_match = true;
                 }
+                current[path_pos] = next[path_pos] || suffix_match;
             }
         } else if (pattern_pos + 1 < pattern.size() &&
                    pattern[pattern_pos] == '*' &&
                    pattern[pattern_pos + 1] == '*') {
-            for (size_t next = path_pos; !matched && next <= path.size(); ++next) {
-                matched = match_at(pattern_pos + 2, next);
+            const auto& next = rows[(pattern_pos + 2) % rows.size()];
+            bool suffix_match = false;
+            for (size_t path_pos = path.size() + 1; path_pos-- > 0;) {
+                suffix_match = suffix_match || next[path_pos];
+                current[path_pos] = suffix_match;
             }
         } else if (pattern[pattern_pos] == '*') {
-            matched = match_at(pattern_pos + 1, path_pos);
-            for (size_t next = path_pos; !matched && next < path.size() && path[next] != '/'; ++next) {
-                matched = match_at(pattern_pos + 1, next + 1);
+            const auto& next = rows[(pattern_pos + 1) % rows.size()];
+            for (size_t path_pos = path.size() + 1; path_pos-- > 0;) {
+                current[path_pos] = next[path_pos] ||
+                    (path_pos < path.size() && path[path_pos] != '/' && current[path_pos + 1]);
             }
         } else if (pattern[pattern_pos] == '?') {
-            matched = path_pos < path.size() &&
-                path[path_pos] != '/' &&
-                match_at(pattern_pos + 1, path_pos + 1);
+            const auto& next = rows[(pattern_pos + 1) % rows.size()];
+            for (size_t path_pos = 0; path_pos < path.size(); ++path_pos) {
+                current[path_pos] = path[path_pos] != '/' && next[path_pos + 1];
+            }
         } else {
-            matched = path_pos < path.size() &&
-                pattern[pattern_pos] == path[path_pos] &&
-                match_at(pattern_pos + 1, path_pos + 1);
+            const auto& next = rows[(pattern_pos + 1) % rows.size()];
+            for (size_t path_pos = 0; path_pos < path.size(); ++path_pos) {
+                current[path_pos] = pattern[pattern_pos] == path[path_pos] && next[path_pos + 1];
+            }
         }
+    }
 
-        cached = matched ? 1 : 0;
-        return matched;
-    };
-
-    return match_at(0, 0);
+    return rows[0][0] != 0;
 }
 
 bool glob_matches_path(std::string_view pattern, std::string_view path)
@@ -571,7 +586,7 @@ void printHelp(const char* file_name, const UserOptions& user_stats)
     cout << "Usage:\n";
     cout << "  " << file_name << " [OPTIONS] PATTERN [PATH ...]\n";
     cout << "  " << file_name << " [OPTIONS] PATTERN -\n";
-    cout << "  " << file_name << " [FILTER OPTIONS] --files [PATH ...]\n";
+    cout << "  " << file_name << " [FILTER OPTIONS] --files PATTERN ROOT [ROOT ...]\n";
     cout << "  " << file_name << " [FILTER OPTIONS] --file NAME [PATH ...]\n";
     cout << "  " << file_name << " [--no-color] --themes\n\n";
 
@@ -600,7 +615,7 @@ void printHelp(const char* file_name, const UserOptions& user_stats)
 
     cout << "\nInput and filtering options:\n";
     print_option("-a", "Searches all files, including binary-looking and normally skipped files");
-    print_option("--files", "Lists files mgrep would search, without requiring a pattern");
+    print_option("--files PATTERN ROOT", "Recursively lists file and directory names containing PATTERN");
     print_option("--file NAME", "Recursively finds files with the exact basename NAME; repeatable");
     print_option("--ff FILE, --files-from FILE", "Reads newline-delimited input file paths from FILE");
     print_option("--files-from0 FILE, --null-files-from FILE", "Reads NUL-delimited input file paths from FILE");
@@ -808,6 +823,7 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
                 break;
             case FILES_OPTION:
                 user_stats.list_files = true;
+                user_stats.files_pattern_search = true;
                 user_stats.recursive_mode = true;
                 break;
             case VERBOSE_OPTION:
@@ -879,7 +895,14 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
         std::cerr << "ERROR: --one-line cannot be used with context or --heading\n";
         return {false, MGREP_EXIT_ERROR, optind};
     }
-    if (user_stats.list_files) {
+    if (user_stats.files_pattern_search) {
+        if (!argv[optind]) {
+            std::cerr << "ERROR: --files requires a filename pattern and search root\n";
+            return {false, MGREP_EXIT_ERROR, optind};
+        }
+        user_stats.pattern = std::string(argv[optind]);
+        ++optind;
+    } else if (user_stats.list_files) {
         user_stats.pattern.clear();
         user_stats.folded_pattern.clear();
     } else if (argv[optind]) {
@@ -919,6 +942,10 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
     }
 
     record_input_operands(original_args, user_stats);
+    if (user_stats.files_pattern_search && user_stats.input_operands.empty()) {
+        std::cerr << "ERROR: --files requires a search root after the filename pattern\n";
+        return {false, MGREP_EXIT_ERROR, optind};
+    }
     if (user_stats.null_output && !user_stats.list_files) {
         for (const auto& operand : user_stats.input_operands) {
             if (operand.kind == InputOperand::Kind::Stdin) {
@@ -927,7 +954,8 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
             }
         }
     }
-    if (user_stats.list_files && user_stats.input_operands.empty()) {
+    if (user_stats.list_files && !user_stats.files_pattern_search &&
+        user_stats.input_operands.empty()) {
         user_stats.input_operands.push_back({InputOperand::Kind::Path, ".", '\n'});
     }
 

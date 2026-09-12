@@ -9,7 +9,7 @@ mgrep \- fast, multithreaded literal and regex search
 .RI [ OPTIONS ] " PATTERN " \-
 .br
 .B mgrep
-.RI [ "FILTER OPTIONS" ] " --files " [ PATH ...]
+.RI [ "FILTER OPTIONS" ] " --files PATTERN ROOT " [ ROOT ...]
 .br
 .B mgrep
 .RI [ "FILTER OPTIONS" ] " --file NAME " [ PATH ...]
@@ -499,10 +499,11 @@ when passing the resulting paths to another program.
 Search all files. This permits binary-looking input and disables the normal ignore
 rules and extension-based skips. It may substantially increase work.
 .TP
-.B --files
-List the files mgrep would search instead of searching their contents. No pattern
-is required. With no path operand, this mode recursively lists from the current
-directory.
+.BI --files " PATTERN ROOT"
+Recursively list searchable files and directories whose basename contains
+.IR PATTERN ,
+without searching file contents. Matching is a case-sensitive literal substring
+comparison. At least one search root is required.
 .TP
 .BI --file " NAME"
 Recursively find files whose basename exactly equals
@@ -717,10 +718,12 @@ Search redirected standard input without colors:
 .B command | mgrep --no-color needle
 .RE
 .PP
-List C and C++ source files mgrep would search:
+Find files and directories with
+.I main
+in their name below the current directory:
 .PP
 .RS
-.B mgrep --files --type source .
+.B mgrep --files main .
 .RE
 .PP
 Find every file named

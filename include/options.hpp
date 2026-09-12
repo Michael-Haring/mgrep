@@ -60,6 +60,7 @@ struct UserOptions {
     bool regex_pattern = false;
     bool heading = false;
     bool list_files = false;
+    bool files_pattern_search = false;
     bool show_themes = false;
     bool null_output = false;
     unsigned int print_before_source = 0;

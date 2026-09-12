@@ -12,9 +12,24 @@ assertion that mgrep is a superior tool overall.
 
 ## Quick Start
 ### Dependencies
+
 - CMake
-- C++ Compiler
-- RE2 development package (`libre2-dev` on Debian and Ubuntu)
+- A C++17 compiler
+- `pkg-config`
+- RE2 development files
+
+Install the required packages for your distribution:
+
+```bash
+# Debian / Ubuntu
+sudo apt install build-essential cmake pkg-config libre2-dev
+
+# Fedora
+sudo dnf install gcc-c++ cmake pkgconf-pkg-config re2-devel
+
+# Arch Linux
+sudo pacman -S base-devel cmake pkgconf re2
+```
 
 
 ```bash
@@ -66,7 +81,7 @@ The legendary getopt provides us with several options in this program
 14. --exclude-glob GLOB Skips paths matching GLOB. Example: --exclude-glob '*test*'
 15. --heading Forces line/source output below one heading per file. Heading output is
 enabled automatically when stdout is a terminal and line-oriented output is requested.
-16. --files Lists files mgrep would search, without requiring a pattern.
+16. --files PATTERN ROOT Recursively lists files and directories whose basename contains PATTERN.
 17. --ff FILE / --files-from FILE Reads newline-delimited input file paths from FILE
 18. --files-from0 FILE / --null-files-from FILE Reads NUL-delimited input file paths from FILE
 19. -t / --theme THEME Select a named color theme: blue, red, green, purple, cyan, yellow,
@@ -106,7 +121,7 @@ mgrep --file main.cpp .
 ```
 Use `--glob` instead when the filename or path is only partially known:
 ```bash
-mgrep --files --glob '*main*' .
+mgrep --files main .
 ```
 
 

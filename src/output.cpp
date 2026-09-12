@@ -7,6 +7,11 @@ namespace {
 constexpr size_t ONE_LINE_WIDTH = 100;
 constexpr const char* ELLIPSIS = "\xE2\x80\xA6";
 
+bool is_utf8_continuation(char ch)
+{
+    return (static_cast<unsigned char>(ch) & 0xC0U) == 0x80U;
+}
+
 size_t decimal_digits(size_t value)
 {
     size_t digits = 1;
@@ -27,8 +32,12 @@ size_t append_compact_path(
 )
 {
     const bool clipped = path.size() > max_width;
-    const size_t suffix_len = clipped && max_width > 1 ? max_width - 1 : max_width;
-    const size_t suffix_pos = path.size() - suffix_len;
+    size_t suffix_len = clipped && max_width > 1 ? max_width - 1 : max_width;
+    size_t suffix_pos = path.size() - suffix_len;
+    while (suffix_pos < path.size() && is_utf8_continuation(path[suffix_pos])) {
+        ++suffix_pos;
+    }
+    suffix_len = path.size() - suffix_pos;
 
     if (!cool_colors) {
         if (clipped && max_width > 0) {
@@ -207,7 +216,14 @@ void append_one_line_source(
     }
 
     const bool left_clipped = slice_start > 0;
-    const size_t slice_end = std::min(line_len, slice_start + slice_len);
+    while (slice_start < line_len && is_utf8_continuation(line_data[slice_start])) {
+        ++slice_start;
+    }
+    size_t slice_end = std::min(line_len, slice_start + slice_len);
+    while (slice_end < line_len && slice_end > slice_start &&
+           is_utf8_continuation(line_data[slice_end])) {
+        --slice_end;
+    }
     if (left_clipped) {
         output.append(ELLIPSIS);
     }
