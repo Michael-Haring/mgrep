@@ -402,6 +402,45 @@ TEST_CASE("Files option finds file and directory names containing a pattern")
     REQUIRE(output == (fixture.root / "src").string() + "\n");
 }
 
+TEST_CASE("Files option matches basename wildcards and regexes")
+{
+    CliFixture fixture;
+    write_file(fixture.root / "src" / "main.cpp", "contents\n");
+    write_file(fixture.root / "src" / "main2.cpp", "contents\n");
+    write_file(fixture.root / "src" / "main_test.txt", "contents\n");
+    write_file(fixture.root / "src" / "email.cpp", "contents\n");
+    write_file(fixture.root / "src" / "main*note.cpp", "contents\n");
+    write_file(fixture.root / "src" / "main_dir" / "child.txt", "contents\n");
+
+    int exit_code = -1;
+    std::string output = run_mgrep({"--files", "main*", fixture.root.string()}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output.find((fixture.root / "src" / "main.cpp").string() + "\n") != std::string::npos);
+    REQUIRE(output.find((fixture.root / "src" / "main_dir").string() + "\n") != std::string::npos);
+    REQUIRE(output.find((fixture.root / "src" / "email.cpp").string()) == std::string::npos);
+    REQUIRE(output.find((fixture.root / "src" / "main_dir" / "child.txt").string()) == std::string::npos);
+
+    output = run_mgrep({"--files", "main?.cpp", fixture.root.string()}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == (fixture.root / "src" / "main2.cpp").string() + "\n");
+
+    output = run_mgrep({"--files", "^main[0-9]+\\.cpp$", fixture.root.string()}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == (fixture.root / "src" / "main2.cpp").string() + "\n");
+
+    output = run_mgrep({"--files", "main.*test", fixture.root.string()}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == (fixture.root / "src" / "main_test.txt").string() + "\n");
+
+    output = run_mgrep({"--literal", "--files", "main*", fixture.root.string()}, &exit_code);
+    REQUIRE(exit_code == 0);
+    REQUIRE(output == (fixture.root / "src" / "main*note.cpp").string() + "\n");
+
+    output = run_mgrep({"--files", "^main[", fixture.root.string()}, &exit_code);
+    REQUIRE(exit_code == 2);
+    REQUIRE(output.find("ERROR: invalid regex:") != std::string::npos);
+}
+
 TEST_CASE("Files option composes with path filters and all-files mode")
 {
     CliFixture fixture;

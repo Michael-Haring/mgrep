@@ -229,6 +229,12 @@ bool pattern_uses_regex(std::string_view pattern)
     return pattern.find_first_of(R"(\.^$|()[]{}*+?)") != std::string_view::npos;
 }
 
+bool files_pattern_uses_regex(std::string_view pattern)
+{
+    return pattern.find_first_of(R"(\^$|()[]{}+)") != std::string_view::npos ||
+        pattern.find(".*") != std::string_view::npos;
+}
+
 int hex_digit_value(char ch)
 {
     if (ch >= '0' && ch <= '9') {
@@ -615,7 +621,7 @@ void printHelp(const char* file_name, const UserOptions& user_stats)
 
     cout << "\nInput and filtering options:\n";
     print_option("-a", "Searches all files, including binary-looking and normally skipped files");
-    print_option("--files PATTERN ROOT", "Recursively lists file and directory names containing PATTERN");
+    print_option("--files PATTERN ROOT", "Lists matching basenames: substring, * or ? wildcard, or regex");
     print_option("--file NAME", "Recursively finds files with the exact basename NAME; repeatable");
     print_option("--ff FILE, --files-from FILE", "Reads newline-delimited input file paths from FILE");
     print_option("--files-from0 FILE, --null-files-from FILE", "Reads NUL-delimited input file paths from FILE");
@@ -901,6 +907,11 @@ ParseResult parse_user_options(int argc, char* argv[], UserOptions& user_stats)
             return {false, MGREP_EXIT_ERROR, optind};
         }
         user_stats.pattern = std::string(argv[optind]);
+        if (!literal_pattern) {
+            user_stats.regex_pattern = files_pattern_uses_regex(user_stats.pattern);
+            user_stats.files_glob_pattern = !user_stats.regex_pattern &&
+                user_stats.pattern.find_first_of("*?") != std::string::npos;
+        }
         ++optind;
     } else if (user_stats.list_files) {
         user_stats.pattern.clear();

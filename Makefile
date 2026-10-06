@@ -54,3 +54,6 @@ install:
 	fi
 	@echo '$(INSTALL_COMMAND)'
 	@set -o pipefail; $(INSTALL_COMMAND) 2>&1 | $(COLOR_BUILD_OUTPUT)
+
+clean:
+	rm -rf build-release/

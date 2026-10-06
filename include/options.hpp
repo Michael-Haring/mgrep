@@ -61,6 +61,7 @@ struct UserOptions {
     bool heading = false;
     bool list_files = false;
     bool files_pattern_search = false;
+    bool files_glob_pattern = false;
     bool show_themes = false;
     bool null_output = false;
     unsigned int print_before_source = 0;

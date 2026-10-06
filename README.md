@@ -81,7 +81,7 @@ The legendary getopt provides us with several options in this program
 14. --exclude-glob GLOB Skips paths matching GLOB. Example: --exclude-glob '*test*'
 15. --heading Forces line/source output below one heading per file. Heading output is
 enabled automatically when stdout is a terminal and line-oriented output is requested.
-16. --files PATTERN ROOT Recursively lists files and directories whose basename contains PATTERN.
+16. --files PATTERN ROOT Recursively lists files and directories by basename. Plain patterns are substrings; `*` and `?` are whole-name wildcards; patterns with explicit regex syntax (`.*`, `^`, `$`, `[]`, etc.) use RE2. Use `--literal` for literal metacharacters.
 17. --ff FILE / --files-from FILE Reads newline-delimited input file paths from FILE
 18. --files-from0 FILE / --null-files-from FILE Reads NUL-delimited input file paths from FILE
 19. -t / --theme THEME Select a named color theme: blue, red, green, purple, cyan, yellow,
@@ -119,9 +119,9 @@ For example, find every `main.cpp` below the current directory:
 ```bash
 mgrep --file main.cpp .
 ```
-Use `--glob` instead when the filename or path is only partially known:
+Use `--files` when only a filename prefix is known:
 ```bash
-mgrep --files main .
+mgrep --files 'main*' .
 ```
 
 

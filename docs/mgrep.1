@@ -500,10 +500,27 @@ Search all files. This permits binary-looking input and disables the normal igno
 rules and extension-based skips. It may substantially increase work.
 .TP
 .BI --files " PATTERN ROOT"
-Recursively list searchable files and directories whose basename contains
-.IR PATTERN ,
-without searching file contents. Matching is a case-sensitive literal substring
-comparison. At least one search root is required.
+Recursively list searchable files and directories by basename, without
+searching file contents. Plain patterns are case-sensitive literal
+substrings. Without regex syntax, patterns containing
+.B *
+or
+.B ?
+match the whole basename as wildcards. Patterns containing regex syntax such as
+.BR .* ,
+.BR ^ ,
+.BR $ ,
+.BR [] ,
+.BR () ,
+.BR + ,
+or
+.B |
+use RE2 regex matching. Use
+.B --literal
+to search for those characters literally. Quote wildcard patterns in the shell,
+for example
+.BR "mgrep --files 'main*' ." .
+At least one search root is required.
 .TP
 .BI --file " NAME"
 Recursively find files whose basename exactly equals
@@ -718,12 +735,12 @@ Search redirected standard input without colors:
 .B command | mgrep --no-color needle
 .RE
 .PP
-Find files and directories with
+Find files and directories whose name starts with
 .I main
-in their name below the current directory:
+below the current directory:
 .PP
 .RS
-.B mgrep --files main .
+.B mgrep --files 'main*' .
 .RE
 .PP
 Find every file named

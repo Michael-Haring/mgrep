@@ -3,6 +3,8 @@
 #include "ignore.hpp"
 #include "output.hpp"
 
+#include <re2/re2.h>
+
 #include <array>
 #include <cerrno>
 #include <cstring>
@@ -127,6 +129,35 @@ void append_list_file(SearchWork& work, const std::string& path)
     }
 }
 
+bool filename_glob_matches(std::string_view pattern, std::string_view name)
+{
+    size_t pattern_pos = 0;
+    size_t name_pos = 0;
+    size_t star_pos = std::string_view::npos;
+    size_t star_name_pos = 0;
+
+    while (name_pos < name.size()) {
+        if (pattern_pos < pattern.size() &&
+            (pattern[pattern_pos] == '?' || pattern[pattern_pos] == name[name_pos])) {
+            ++pattern_pos;
+            ++name_pos;
+        } else if (pattern_pos < pattern.size() && pattern[pattern_pos] == '*') {
+            star_pos = pattern_pos++;
+            star_name_pos = name_pos;
+        } else if (star_pos != std::string_view::npos) {
+            pattern_pos = star_pos + 1;
+            name_pos = ++star_name_pos;
+        } else {
+            return false;
+        }
+    }
+
+    while (pattern_pos < pattern.size() && pattern[pattern_pos] == '*') {
+        ++pattern_pos;
+    }
+    return pattern_pos == pattern.size();
+}
+
 bool list_pattern_matches(std::string_view path, const UserOptions& user_stats)
 {
     if (!user_stats.files_pattern_search) {
@@ -137,6 +168,13 @@ bool list_pattern_matches(std::string_view path, const UserOptions& user_stats)
     const std::string_view name = slash_pos == std::string_view::npos
         ? path
         : path.substr(slash_pos + 1);
+    if (user_stats.regex_pattern) {
+        return re2::RE2::PartialMatch(
+            re2::StringPiece(name.data(), name.size()), *user_stats.compiled_regex);
+    }
+    if (user_stats.files_glob_pattern) {
+        return filename_glob_matches(user_stats.pattern, name);
+    }
     return name.find(user_stats.pattern) != std::string_view::npos;
 }
 
